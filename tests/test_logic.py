@@ -99,8 +99,9 @@ class PlugStateTest(unittest.TestCase):
 
 class ShellyHostTest(unittest.TestCase):
     def test_accepts_cloud_hosts(self):
-        self.assertEqual(logic.validate_shelly_host("shelly-1-eu.shelly.cloud"), "shelly-1-eu.shelly.cloud")
-        self.assertEqual(logic.validate_shelly_host("https://shelly-1-eu.shelly.cloud/"), "shelly-1-eu.shelly.cloud")
+        host = "shelly-1-eu.shelly.cloud"
+        self.assertEqual(logic.validate_shelly_host(host), host)
+        self.assertEqual(logic.validate_shelly_host(f"https://{host}/"), host)
 
     def test_rejects_others(self):
         for host in ("evil.com", "shelly.cloud.evil.com", "a.shelly.cloud/x", "a.shelly.cloud@evil.com", ""):
@@ -175,7 +176,8 @@ class DeyeUrlTest(unittest.TestCase):
 
 class DeyeTokenTest(unittest.TestCase):
     def test_parse(self):
-        token, ttl = logic.parse_deye_token(200, {"success": True, "accessToken": "t", "expiresIn": "5183999"})
+        response = {"success": True, "accessToken": "t", "expiresIn": "5183999"}
+        token, ttl = logic.parse_deye_token(200, response)
         self.assertEqual(token, "t")
         self.assertEqual(ttl, 5183999 - 86400)
 
@@ -188,8 +190,11 @@ class DeyeTokenTest(unittest.TestCase):
         self.assertTrue(logic.is_deye_auth_error(200, {"success": False, "msg": "token expired"}))
         self.assertFalse(logic.is_deye_auth_error(200, {"success": False, "msg": "device not found"}))
         # Real response for a read-only user hitting a settings endpoint.
-        self.assertFalse(logic.is_deye_auth_error(
-            200, {"success": False, "code": "2101042", "msg": "auth no operation permission"}))
+        self.assertFalse(
+            logic.is_deye_auth_error(
+                200, {"success": False, "code": "2101042", "msg": "auth no operation permission"}
+            )
+        )
         self.assertFalse(logic.is_deye_auth_error(200, deye()))
 
 

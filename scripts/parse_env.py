@@ -12,8 +12,16 @@ import re
 import sys
 from pathlib import Path
 
-SECRETS = ("DEYE_APP_ID", "APP_SECRET", "USER_EMAIL", "SHA_256_PASSWORD", "INVERTER_SN",
-           "SHELLY_HOST", "DEVICE_ID", "SHELLY_AUTH_KEY")
+SECRETS = (
+    "DEYE_APP_ID",
+    "APP_SECRET",
+    "USER_EMAIL",
+    "SHA_256_PASSWORD",
+    "INVERTER_SN",
+    "SHELLY_HOST",
+    "DEVICE_ID",
+    "SHELLY_AUTH_KEY",
+)
 LINE_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$")
 
 
