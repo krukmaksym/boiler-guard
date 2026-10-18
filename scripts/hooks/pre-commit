@@ -25,6 +25,7 @@ PATTERNS = {
     "credential assignment": re.compile(
         rb"(APP_SECRET|SHELLY_AUTH_KEY|SHA_256_PASSWORD|BEARER_TOKEN)\s*=\s*[\"']?[A-Za-z0-9+/=_-]{16,}"
     ),
+    "Telegram bot token": re.compile(rb"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"),
 }
 
 

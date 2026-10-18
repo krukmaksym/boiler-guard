@@ -104,6 +104,30 @@ One-time setup, in a GitHub environment named `production`:
 
 Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
+### Telegram notifications (optional)
+
+The Worker can message a Telegram chat (texts are in Ukrainian) when:
+
+- grid is lost and the boiler is switched off, and when grid returns and it's back on;
+- Deye has given no trustworthy data for 15 minutes (protection paused), and on recovery;
+- the plug can't be switched because Shelly is unreachable;
+- a run fails with an error (repeated at most hourly), and when it works again.
+
+Each event is sent once, not every minute. Messages go out only after the plug logic
+has run, with a 10 s timeout; a Telegram failure is logged and never affects the
+boiler. Only `https://api.telegram.org` is contacted and the bot is send-only, so the
+Worker still has no public URL.
+
+Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and add it to your chat
+   (in a group, send `/start@<botname>` there once).
+2. Put `TELEGRAM_BOT_TOKEN` in `.prod.vars`, then find the chat ID:
+   `python3 -I scripts/telegram_chat_id.py` and add `TELEGRAM_CHAT_ID` too.
+3. Upload: `scripts/upload-secrets.sh .prod.vars`.
+
+For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests.
+
 ### Alerts
 
 Cloudflare custom alerts (beta) can watch the Workers events dataset: alert when

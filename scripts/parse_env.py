@@ -22,6 +22,8 @@ SECRETS = (
     "DEVICE_ID",
     "SHELLY_AUTH_KEY",
 )
+# Uploaded when present; the Worker runs without them (no notifications).
+OPTIONAL_SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
 LINE_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$")
 
 
@@ -49,7 +51,7 @@ def write_private(path, text):
 
 def main(env_file, mode, target):
     values = parse(env_file)
-    secrets = {k: values[k] for k in SECRETS}
+    secrets = {k: values[k] for k in SECRETS + OPTIONAL_SECRETS if values.get(k)}
     if mode == "bulk-json":
         write_private(Path(target) / "secrets.json", json.dumps(secrets))
         if values.get("BEARER_TOKEN"):
