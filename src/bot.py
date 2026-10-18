@@ -139,8 +139,9 @@ def control_message(action, target, switched):
         return f"{head} {HOLD_NOTE}"
     if target != "on":
         return AUTO_WAIT_MESSAGE
-    head = "🔌 Бойлер увімкнено." if switched else "🔌 Бойлер вже увімкнено."
-    return f"{head} {AUTO_NOTE}"
+    if switched:
+        return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
+    return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."
 
 
 def not_admin_message(user_id, configured):

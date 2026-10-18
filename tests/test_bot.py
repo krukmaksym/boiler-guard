@@ -108,7 +108,7 @@ class AdminButtonsTest(unittest.TestCase):
     def test_control_message_says_switched_or_already(self):
         self.assertTrue(bot.control_message("on", "on", switched=True).startswith("🔌 Бойлер увімкнено."))
         already_on = bot.control_message("on", "on", switched=False)
-        self.assertEqual(already_on, "🔌 Бойлер вже увімкнено. Ним знову керує автоматичний захист.")
+        self.assertEqual(already_on, "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист.")
         self.assertTrue(
             bot.control_message("off", "off", switched=True).startswith("⛔ Бойлер вимкнено вручну.")
         )
