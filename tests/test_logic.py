@@ -61,6 +61,13 @@ class GridVoltageTest(unittest.TestCase):
         data["deviceDataList"][0]["dataList"] = [i for i in items if i["key"] != "GridVoltageL1L2"]
         self.assertIsNone(logic.grid_voltage(data, SN, NOW))
 
+    def test_battery_soc(self):
+        data = deye()
+        data["deviceDataList"][0]["dataList"].append({"key": "SOC", "value": "87", "unit": "%"})
+        self.assertEqual(logic.battery_soc(data, SN, NOW), 87.0)
+        self.assertIsNone(logic.battery_soc(deye(), SN, NOW))  # no SOC key
+        self.assertIsNone(logic.battery_soc(data, SN, NOW + 3600))  # stale
+
     def test_millisecond_timestamp(self):
         self.assertEqual(logic.grid_voltage(deye(collected=(NOW - 60) * 1000), SN, NOW), 223.2)
 

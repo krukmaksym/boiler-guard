@@ -17,12 +17,22 @@ class NotifyError(Exception):
     """Bad Telegram configuration. Never carries the token."""
 
 
-def telegram_send_url(token):
-    """The only URL notifications go to. The token must sit in the path (Telegram's
-    API design), so this URL must never be logged."""
+# The only Telegram Bot API methods this project ever calls.
+TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands"})
+
+
+def telegram_api_url(token, method):
+    """URL for an allowlisted Bot API method. The token must sit in the path
+    (Telegram's API design), so these URLs must never be logged."""
+    if method not in TELEGRAM_METHODS:
+        raise NotifyError(f"Telegram method {method!r} is not allowed")
     if not isinstance(token, str) or not _TOKEN_RE.match(token):
         raise NotifyError("TELEGRAM_BOT_TOKEN has an unexpected format")
-    return f"{TELEGRAM_API}/bot{token}/sendMessage"
+    return f"{TELEGRAM_API}/bot{token}/{method}"
+
+
+def telegram_send_url(token):
+    return telegram_api_url(token, "sendMessage")
 
 
 def _v(voltage):

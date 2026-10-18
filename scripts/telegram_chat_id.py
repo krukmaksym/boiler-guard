@@ -25,8 +25,7 @@ def read_token(path):
 
 
 def main(path=".prod.vars"):
-    send_url = notify.telegram_send_url(read_token(path))  # validates the token format
-    url = send_url.removesuffix("/sendMessage") + "/getUpdates"
+    url = notify.telegram_api_url(read_token(path), "getUpdates")  # validates the token format
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310 - fixed https host
             data = json.load(resp)
