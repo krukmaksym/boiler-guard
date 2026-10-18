@@ -13,6 +13,9 @@ INVERTER_SN = "<inverter-serial>"
 # Optional: Telegram notifications (see README). Leave out to disable.
 # TELEGRAM_BOT_TOKEN = "<bot-token-from-BotFather>"
 # TELEGRAM_CHAT_ID = "<chat-id>"
+# Optional: Telegram user IDs allowed to use the /boiler buttons (comma-separated).
+# Send /boiler in the chat: the bot replies with your ID.
+# TELEGRAM_ADMIN_IDS = "<your-telegram-user-id>"
 
 # Shelly Cloud (Settings -> Authorization cloud key)
 SHELLY_HOST = "shelly-<n>-<region>.shelly.cloud"

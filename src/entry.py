@@ -2,10 +2,10 @@
 
 Runs on a cron trigger. Credentials come from Worker Secrets; the STATE KV
 namespace only holds the auto-refreshed Deye token, the last desired plug state,
-notification dedup state and the Telegram update offset. Optional Telegram
-notifications and /status replies run after the plug logic and can never block or
-break it. Commands are fetched by polling (getUpdates) each run: no webhook, so the
-Worker still has no public URL.
+the admin's manual-off flag, notification dedup state and the Telegram update
+offset. Optional Telegram notifications, /status replies and /boiler buttons run
+after the plug logic and can never block or break it. Updates are fetched by
+polling (getUpdates) each run: no webhook, so the Worker still has no public URL.
 """
 
 import asyncio
@@ -36,6 +36,7 @@ TOKEN_KEY = "deye:token"  # noqa: S105
 TOKEN_BACKOFF_KEY = "deye:token_backoff"  # noqa: S105
 TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on bad credentials
 DESIRED_KEY = "state:desired"
+MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
 REQUEST_TIMEOUT_MS = 15000
@@ -250,7 +251,7 @@ class Default(WorkerEntrypoint):
             return False, data
         return True, data
 
-    async def send_telegram(self, text, reply_to=None):
+    async def send_telegram(self, text, reply_to=None, markup=None):
         """True when delivered or when Telegram isn't configured."""
         token, chat_id = self.telegram_config()
         if not token:
@@ -262,39 +263,114 @@ class Default(WorkerEntrypoint):
         }
         if reply_to is not None:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        if markup is not None:
+            payload["reply_markup"] = markup
         ok, _ = await self.telegram("sendMessage", payload)
         if ok:
             log("Telegram message sent")
         return ok
 
-    # --- read-only commands (/status) ---------------------------------------
+    # --- commands (/status, /help) and admin buttons (/boiler) ---------------
 
     async def answer_commands(self, run):
-        """Poll for new messages and answer /status and /help from the configured chat."""
+        """Poll for new updates: apply the admin's latest button press, then answer
+        /status, /boiler and /help from the configured chat."""
         token, chat_id = self.telegram_config()
         if not token:
             return
         offset = int(await self.kv_get(OFFSET_KEY) or 0)
-        payload = {"timeout": 0, "allowed_updates": ["message"]}
+        payload = {"timeout": 0, "allowed_updates": ["message", "callback_query"]}
         if offset:
             payload["offset"] = offset
         ok, data = await self.telegram("getUpdates", payload)
         if not ok:
             return
         updates = data.get("result") or []
+        # Confirm first: a command that crashes this run must not be replayed forever.
+        new_offset = bot.next_offset(updates, offset)
+        if new_offset != offset:  # KV write only when updates arrived
+            await self.kv_put(OFFSET_KEY, str(new_offset))
+
+        admins = bot.admin_ids(self.var("TELEGRAM_ADMIN_IDS", None))
+        await self.handle_taps(bot.taps(updates, chat_id), admins, run)
+
         wanted = bot.replies(bot.requests(updates, chat_id))
         if "help" in wanted:
-            await self.send_telegram(bot.HELP_MESSAGE, reply_to=wanted["help"])
-        if "status" in wanted:
-            plug = run["plug"] if "plug" in run else await self.poll_plug()
-            text = bot.status_message(
-                run.get("voltage"), plug, run.get("soc"), off_below=float(self.var("OFF_VOLTAGE", "205"))
-            )
-            await self.send_telegram(text, reply_to=wanted["status"])
-            log("answered /status")
-        new_offset = bot.next_offset(updates, offset)
-        if new_offset != offset:  # KV write only when messages arrived
-            await self.kv_put(OFFSET_KEY, str(new_offset))
+            await self.send_telegram(bot.HELP_MESSAGE, reply_to=wanted["help"][0])
+        boiler = wanted.get("boiler")
+        if boiler and str(boiler[1]) not in admins:
+            await self.send_telegram(bot.not_admin_message(boiler[1], bool(admins)), reply_to=boiler[0])
+            boiler = None
+        if "status" in wanted or boiler:
+            text = await self.status_text(run)
+            if "status" in wanted:
+                await self.send_telegram(text, reply_to=wanted["status"][0])
+                log("answered /status")
+            if boiler:
+                await self.send_telegram(
+                    bot.panel_message(text), reply_to=boiler[0], markup=bot.PANEL_KEYBOARD
+                )
+                log("sent /boiler panel")
+
+    async def status_text(self, run):
+        plug = run["plug"] if "plug" in run else await self.poll_plug()
+        return bot.status_message(
+            run.get("voltage"),
+            plug,
+            run.get("soc"),
+            off_below=float(self.var("OFF_VOLTAGE", "205")),
+            manual_off=await self.kv_get(MODE_KEY) == logic.OFF,
+        )
+
+    async def handle_taps(self, presses, admins, run):
+        """Answer every button press; apply only the latest valid one from an admin."""
+        latest = None
+        stale_panels = set()
+        for tap in presses:
+            verdict = bot.tap_verdict(tap, admins, time.time())
+            answer = {"callback_query_id": tap["id"]}
+            if verdict == "ok":
+                latest = tap
+            elif verdict == "not_admin":
+                answer["text"] = "🔒 Лише для адміністратора"
+                log("ignored a button press from a non-admin")
+            else:
+                stale_panels.add(tap["panel"])
+            # Stops the button's spinner; may fail if the press is too old, which is harmless.
+            await self.telegram("answerCallbackQuery", answer)
+        for panel in stale_panels:
+            await self.send_telegram(bot.STALE_PANEL_MESSAGE, reply_to=panel)
+        if latest:
+            text = await self.apply_control(latest["action"], run)
+            await self.send_telegram(text, reply_to=latest["panel"])
+            log(f"admin control: {latest['action']}")
+
+    async def apply_control(self, action, run):
+        """Carry out an admin's button press and return the reply. The mode is saved
+        only after the plug is in the right state, so a failure changes nothing."""
+        target = logic.control_target(action, run.get("desired"))
+        if target is not None:
+            try:
+                secrets = self.secrets()
+                channel = int(self.var("SHELLY_CHANNEL", "0"))
+                if "plug" in run:
+                    await asyncio.sleep(1.1)  # Shelly was already called this run (~1 request/second)
+                actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
+                if actual is None:
+                    return bot.CONTROL_FAILED_MESSAGE
+                if actual != target:
+                    await asyncio.sleep(1.1)
+                    await self.shelly("/device/relay/control", secrets, channel=channel, turn=target)
+                    log(f"admin control: switched plug {actual} -> {target}")
+                run["plug"] = target
+            except Exception as exc:
+                log(f"admin control: Shelly failed: {type(exc).__name__}")
+                return bot.CONTROL_FAILED_MESSAGE
+        if action == logic.OFF:
+            await self.kv_put(MODE_KEY, logic.OFF)
+            return bot.MANUAL_OFF_MESSAGE
+        await self.env.STATE.delete(MODE_KEY)
+        return bot.AUTO_ON_MESSAGE if target == logic.ON else bot.AUTO_WAIT_MESSAGE
 
     async def poll_plug(self):
         try:
@@ -324,28 +400,36 @@ class Default(WorkerEntrypoint):
             on_at=float(self.var("ON_VOLTAGE", "210")),
             off_below=float(self.var("OFF_VOLTAGE", "205")),
         )
+        run["desired"] = desired
         if desired is None or desired == previous:
             log(f"grid {voltage:.1f}V, desired={desired}; no change")
             return
 
-        # Desired state changed: poll Shelly first, command only if it differs.
+        # Desired state changed. The admin's manual off wins over grid returning.
+        held = desired == logic.ON and await self.kv_get(MODE_KEY) == logic.OFF
+        target = logic.OFF if held else desired
+
+        # Poll Shelly first, command only if it differs.
         actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
         run["plug"] = actual
         if actual is None:
             log("Shelly plug offline/unknown; will retry next run")
-            outbox.append(notify.on_switch_failed(state, desired))
+            if not held:
+                outbox.append(notify.on_switch_failed(state, desired))
             return  # don't persist, so the next run tries again
 
-        if actual != desired:
+        if actual != target:
             await asyncio.sleep(1.1)  # Shelly cloud allows ~1 request/second
-            await self.shelly("/device/relay/control", secrets, channel=channel, turn=desired)
-            run["plug"] = desired
-            log(f"grid {voltage:.1f}V: switched plug {actual} -> {desired}")
+            await self.shelly("/device/relay/control", secrets, channel=channel, turn=target)
+            run["plug"] = target
+            log(f"grid {voltage:.1f}V: switched plug {actual} -> {target}")
         else:
-            log(f"grid {voltage:.1f}V: plug already {actual}")
+            log(f"grid {voltage:.1f}V: plug already {actual}" + (" (held off by admin)" if held else ""))
 
         await self.kv_put(DESIRED_KEY, desired)
-        outbox.append(notify.on_switched(state, previous, desired, voltage, switched=actual != desired))
+        outbox.append(
+            notify.on_switched(state, previous, desired, voltage, switched=actual != target, held=held)
+        )
 
 
 def error_summary(exc):
