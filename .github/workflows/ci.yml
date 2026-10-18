@@ -1,4 +1,4 @@
-name: CI/CD
+name: "[Cloudflare Worker] boiler-guard deployment pipeline"
 
 on:
   pull_request:
