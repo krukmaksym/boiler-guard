@@ -18,7 +18,7 @@ class NotifyError(Exception):
 
 
 # The only Telegram Bot API methods this project ever calls.
-TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands"})
+TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands", "answerCallbackQuery"})
 
 
 def telegram_api_url(token, method):
@@ -42,11 +42,14 @@ def _v(voltage):
 # --- messages (Ukrainian, written for the whole family) ----------------------
 
 
-def grid_message(desired, voltage, switched):
+def grid_message(desired, voltage, switched, held=False):
     if desired == "off":
         tail = "Бойлер вимкнено, щоб не розряджати батарею." if switched else "Бойлер уже був вимкнений."
         return f"⚡️ Зникло світло (мережа {_v(voltage)}). {tail}"
-    tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
+    if held:
+        tail = "Бойлер лишається вимкненим: його вимкнули вручну."
+    else:
+        tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
     return f"✅ Світло повернулося (мережа {_v(voltage)}). {tail}"
 
 
@@ -108,12 +111,13 @@ def on_switch_failed(state, desired):
     return switch_failed_message(desired)
 
 
-def on_switched(state, previous, desired, voltage, switched):
-    """Desired state changed and was applied. Silent on the very first run (no previous)."""
+def on_switched(state, previous, desired, voltage, switched, held=False):
+    """Desired state changed and was applied. Silent on the very first run (no previous).
+    held: grid is back but the admin switched the boiler off by hand, so it stays off."""
     state.pop("switch_failed", None)
     if previous is None:
         return None
-    return grid_message(desired, voltage, switched)
+    return grid_message(desired, voltage, switched, held)
 
 
 def on_error(state, signature, detail, now):

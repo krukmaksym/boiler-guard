@@ -23,7 +23,7 @@ SECRETS = (
     "SHELLY_AUTH_KEY",
 )
 # Uploaded when present; the Worker runs without them (no notifications).
-OPTIONAL_SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+OPTIONAL_SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ADMIN_IDS")
 LINE_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$")
 
 

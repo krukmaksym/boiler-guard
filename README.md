@@ -39,8 +39,8 @@ expires or is rejected.
   stations or accounts (`/order/*`, `/strategy/*`, logger and station management)
   are refused before any request is made, with a test for each.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
-  KV (`STATE`) holds only the derived Deye token, a login back-off flag and the
-  `on`/`off` state.
+  KV (`STATE`) holds only the derived Deye token, a login back-off flag, the
+  `on`/`off` state, the admin's manual-off flag and Telegram bookkeeping.
 - No public URL (`workers_dev = false`, `preview_urls = false`); `fetch` returns 404.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
   Ideally use a Shelly account that holds only this plug: the key can't be scoped.
@@ -115,8 +115,8 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
 Each event is sent once, not every minute. Messages go out only after the plug logic
 has run, with a 10 s timeout; a Telegram failure is logged and never affects the
-boiler. Only `https://api.telegram.org` is contacted and the bot is send-only, so the
-Worker still has no public URL.
+boiler. Only `https://api.telegram.org` is contacted, through an allowlist of Bot API
+methods, so the Worker still has no public URL.
 
 Setup:
 
@@ -136,8 +136,35 @@ is active. `/start` or `/help` explain what it does.
 
 There is no webhook: each run fetches new messages with `getUpdates`, so the Worker
 still has no public URL. Only the configured `TELEGRAM_CHAT_ID` is answered (anyone
-else messaging the bot is ignored), and no command can change anything. Shelly is
+else messaging the bot is ignored), and `/status` can't change anything. Shelly is
 polled for the reply only when someone asks.
+
+#### Controlling the boiler: `/boiler` (admin only)
+
+`/boiler` replies with the current state and two buttons:
+
+- **⛔ Вимкнути**: switches the boiler off and *holds* it off. Even when grid returns
+  it stays off (the grid message says so) until the admin presses Увімкнути.
+- **🔌 Увімкнути**: returns to automatic control. With grid present the boiler is
+  switched on right away. On battery, or without fresh Deye data, it is **never**
+  switched on from the bot; it comes on by itself when grid returns.
+
+Each press is applied on the next run (within a minute) and confirmed in the chat.
+Guards:
+
+- Only Telegram user IDs in the `TELEGRAM_ADMIN_IDS` secret (comma-separated) can
+  press the buttons. Telegram authenticates user IDs, so a leaked bot token can't
+  impersonate the admin. Anyone else sending `/boiler` gets a reply with their own
+  Telegram ID, which is also how you find yours.
+- Buttons expire 10 minutes after the panel was sent, so a press stuck in
+  Telegram's queue or an old panel in the chat history can't act later.
+- Updates are confirmed before they're handled, so a failing run never replays a press.
+- The manual mode is saved only after the plug is confirmed in the right state; if
+  Shelly doesn't answer, nothing changes and the chat is told.
+- Deye stays read-only: the buttons only drive the Shelly plug.
+
+Setup: send `/boiler` in the chat, put the ID from the reply into `.prod.vars` as
+`TELEGRAM_ADMIN_IDS`, and run `scripts/upload-secrets.sh .prod.vars`.
 
 Register the command menu once: `python3 -I scripts/telegram_commands.py`.
 

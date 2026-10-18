@@ -16,6 +16,9 @@ class TelegramUrlTest(unittest.TestCase):
 
     def test_method_allowlist(self):
         self.assertTrue(notify.telegram_api_url(TOKEN, "getUpdates").endswith("/getUpdates"))
+        self.assertTrue(
+            notify.telegram_api_url(TOKEN, "answerCallbackQuery").endswith("/answerCallbackQuery")
+        )
         for method in ("deleteMessage", "setWebhook", "sendMessage/../x"):
             with self.assertRaises(notify.NotifyError):
                 notify.telegram_api_url(TOKEN, method)
@@ -55,6 +58,11 @@ class SwitchTest(unittest.TestCase):
         on = notify.on_switched(state, "off", "on", 226.0, switched=True)
         self.assertIn("Світло повернулося", on)
         self.assertIn("увімкнено", on)
+
+    def test_grid_back_while_held_off(self):
+        msg = notify.on_switched({}, "off", "on", 226.0, switched=False, held=True)
+        self.assertIn("Світло повернулося", msg)
+        self.assertIn("лишається вимкненим", msg)
 
     def test_already_in_state_wording(self):
         self.assertIn("уже був вимкнений", notify.on_switched({}, "on", "off", 0.0, switched=False))

@@ -155,3 +155,17 @@ def plug_state(data, channel=0):
     if not isinstance(output, bool):
         return None
     return ON if output else OFF
+
+
+def control_target(action, desired_now):
+    """Plug state an admin's button press should produce, or None to leave it.
+
+    'off' always switches off. 'on' switches on only while grid is present right now
+    (this run's desired state is ON); on battery or without fresh data the boiler is
+    never turned on from the bot, it just goes back to automatic control.
+    """
+    if action == OFF:
+        return OFF
+    if action == ON and desired_now == ON:
+        return ON
+    return None

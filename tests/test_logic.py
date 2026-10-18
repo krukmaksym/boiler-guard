@@ -87,6 +87,18 @@ class HysteresisTest(unittest.TestCase):
         self.assertIsNone(logic.desired_state(None, logic.ON))
 
 
+class ControlTargetTest(unittest.TestCase):
+    def test_off_always_switches_off(self):
+        for desired in (logic.ON, logic.OFF, None):
+            self.assertEqual(logic.control_target(logic.OFF, desired), logic.OFF)
+
+    def test_on_only_with_grid(self):
+        self.assertEqual(logic.control_target(logic.ON, logic.ON), logic.ON)
+        self.assertIsNone(logic.control_target(logic.ON, logic.OFF))  # on battery: never from the bot
+        self.assertIsNone(logic.control_target(logic.ON, None))  # no fresh Deye data
+        self.assertIsNone(logic.control_target("explode", logic.ON))
+
+
 class PlugStateTest(unittest.TestCase):
     def test_gen3_switch(self):
         self.assertEqual(logic.plug_state(shelly(True)), logic.ON)
