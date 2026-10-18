@@ -14,6 +14,12 @@ class TelegramUrlTest(unittest.TestCase):
     def test_valid_token(self):
         self.assertEqual(notify.telegram_send_url(TOKEN), f"https://api.telegram.org/bot{TOKEN}/sendMessage")
 
+    def test_method_allowlist(self):
+        self.assertTrue(notify.telegram_api_url(TOKEN, "getUpdates").endswith("/getUpdates"))
+        for method in ("deleteMessage", "setWebhook", "sendMessage/../x"):
+            with self.assertRaises(notify.NotifyError):
+                notify.telegram_api_url(TOKEN, method)
+
     def test_rejects_odd_tokens(self):
         for bad in (None, "", "abc", "123:short", f"{TOKEN}/../../x", "evil.com/bot1:" + "A" * 35):
             with self.assertRaises(notify.NotifyError):

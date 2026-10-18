@@ -85,6 +85,16 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
     and stay ~230V on battery, so they must never be mistaken for grid.
     None covers: failed response, SN missing, inverter offline, stale or missing reading.
     """
+    return _reading(_fresh_device(data, sn, now, max_age_seconds), key)
+
+
+def battery_soc(data, sn, now, key="SOC", max_age_seconds=900):
+    """Battery state of charge (%) from the same response, or None."""
+    return _reading(_fresh_device(data, sn, now, max_age_seconds), key)
+
+
+def _fresh_device(data, sn, now, max_age_seconds):
+    """The inverter's entry if the response is successful, online and fresh, else None."""
     if not isinstance(data, dict) or not data.get("success"):
         return None
     device = next(
@@ -101,7 +111,12 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
         collected /= 1000
     if now - collected > max_age_seconds:
         return None
+    return device
 
+
+def _reading(device, key):
+    if device is None:
+        return None
     for item in device.get("dataList") or []:
         if item.get("key") == key:
             try:

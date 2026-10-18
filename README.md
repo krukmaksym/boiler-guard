@@ -128,6 +128,19 @@ Setup:
 
 For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests.
 
+#### Asking the bot: `/status`
+
+Send `/status` in the chat and the bot replies on its next run (within a minute) with
+grid voltage, the boiler's real on/off state, battery charge and whether protection
+is active. `/start` or `/help` explain what it does.
+
+There is no webhook: each run fetches new messages with `getUpdates`, so the Worker
+still has no public URL. Only the configured `TELEGRAM_CHAT_ID` is answered (anyone
+else messaging the bot is ignored), and no command can change anything. Shelly is
+polled for the reply only when someone asks.
+
+Register the command menu once: `python3 -I scripts/telegram_commands.py`.
+
 ### Alerts
 
 Cloudflare custom alerts (beta) can watch the Workers events dataset: alert when
