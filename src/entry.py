@@ -1,7 +1,9 @@
 """Boiler guard: switch the Shelly plug off when the Deye inverter loses grid.
 
 Runs on a cron trigger. Credentials come from Worker Secrets; the STATE KV
-namespace only holds the auto-refreshed Deye token and the last desired plug state.
+namespace only holds the auto-refreshed Deye token, the last desired plug state and
+notification dedup state. Optional Telegram notifications are sent after the plug
+logic has run and can never block or break it.
 """
 
 import asyncio
@@ -14,6 +16,7 @@ from pyodide.ffi import to_js
 from workers import Response, WorkerEntrypoint, fetch
 
 import logic
+import notify
 
 REQUIRED_SECRETS = (
     "DEYE_APP_ID",
@@ -30,14 +33,16 @@ TOKEN_KEY = "deye:token"  # noqa: S105
 TOKEN_BACKOFF_KEY = "deye:token_backoff"  # noqa: S105
 TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on bad credentials
 DESIRED_KEY = "state:desired"
+NOTIFY_KEY = "state:notify"
 REQUEST_TIMEOUT_MS = 15000
+NOTIFY_TIMEOUT_MS = 10000
 
 
 class ConfigError(Exception):
     pass
 
 
-async def http_json(url, *, method="GET", headers=None, body=None):
+async def http_json(url, *, method="GET", headers=None, body=None, timeout_ms=REQUEST_TIMEOUT_MS):
     """Return (status, parsed JSON or None). Never logs the request.
 
     Redirects are not followed, so credentials in a body can't be replayed to
@@ -49,7 +54,7 @@ async def http_json(url, *, method="GET", headers=None, body=None):
         headers=headers or {},
         body=body,
         redirect="manual",
-        signal=AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal=AbortSignal.timeout(timeout_ms),
     )
     text = await resp.text()
     try:
@@ -68,7 +73,22 @@ class Default(WorkerEntrypoint):
         return Response("Not found", status=404)
 
     async def scheduled(self, controller, env=None, ctx=None):
-        await self.check()
+        outbox = []
+        state = await self.load_notify_state()
+        before = json.dumps(state, sort_keys=True)
+        try:
+            await self.check(state, outbox)
+        except Exception as exc:
+            signature, detail = error_summary(exc)
+            outbox.append(notify.on_error(state, signature, detail, time.time()))
+            raise
+        else:
+            outbox.append(notify.on_success(state))
+        finally:
+            try:
+                await self.flush(state, before, [m for m in outbox if m])
+            except Exception as exc:  # notifications must never mask the real outcome
+                log(f"notification flush failed: {type(exc).__name__}")
 
     # --- config -----------------------------------------------------------
 
@@ -171,13 +191,68 @@ class Default(WorkerEntrypoint):
             raise logic.ApiError(f"Shelly {path} failed (HTTP {status})")
         return data
 
+    # --- notifications ------------------------------------------------------
+
+    async def load_notify_state(self):
+        try:
+            state = json.loads(await self.kv_get(NOTIFY_KEY) or "{}")
+        except ValueError:
+            state = {}
+        return state if isinstance(state, dict) else {}
+
+    async def flush(self, state, before, messages):
+        """Send queued messages, then persist dedup state. If a send fails the state is
+        not saved, so the next run retries that notification."""
+        delivered = True
+        for text in messages:
+            delivered = await self.send_telegram(text) and delivered
+        after = json.dumps(state, sort_keys=True)
+        if delivered and after != before:
+            await self.kv_put(NOTIFY_KEY, after)
+
+    async def send_telegram(self, text):
+        """True when delivered or when Telegram isn't configured."""
+        token = self.var("TELEGRAM_BOT_TOKEN", None)
+        chat_id = self.var("TELEGRAM_CHAT_ID", None)
+        if not token or not chat_id:
+            return True
+        try:
+            url = notify.telegram_send_url(token)
+        except notify.NotifyError as exc:
+            log(str(exc))
+            return True  # misconfiguration won't fix itself by retrying
+        payload = {
+            "chat_id": chat_id,
+            "text": self.var("NOTIFY_PREFIX", "") + text,
+            "disable_web_page_preview": True,
+        }
+        try:
+            status, data = await http_json(
+                url,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(payload),
+                timeout_ms=NOTIFY_TIMEOUT_MS,
+            )
+        except Exception as exc:
+            # Only the type: the request URL contains the bot token.
+            log(f"Telegram send failed: {type(exc).__name__}")
+            return False
+        if status != 200 or not (isinstance(data, dict) and data.get("ok")):
+            description = data.get("description") if isinstance(data, dict) else None
+            log(f"Telegram send failed (HTTP {status}, {description!r})")
+            return False
+        log("Telegram notification sent")
+        return True
+
     # --- main loop ----------------------------------------------------------
 
-    async def check(self):
+    async def check(self, state, outbox):
         secrets = self.secrets()
         channel = int(self.var("SHELLY_CHANNEL", "0"))
 
         voltage = await self.grid_voltage(secrets)
+        outbox.append(notify.on_voltage(state, voltage, time.time()))
         if voltage is None:
             log("no trustworthy grid reading; leaving plug as is")
             return
@@ -197,6 +272,7 @@ class Default(WorkerEntrypoint):
         actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
         if actual is None:
             log("Shelly plug offline/unknown; will retry next run")
+            outbox.append(notify.on_switch_failed(state, desired))
             return  # don't persist, so the next run tries again
 
         if actual != desired:
@@ -207,3 +283,14 @@ class Default(WorkerEntrypoint):
             log(f"grid {voltage:.1f}V: plug already {actual}")
 
         await self.kv_put(DESIRED_KEY, desired)
+        outbox.append(notify.on_switched(state, previous, desired, voltage, switched=actual != desired))
+
+
+def error_summary(exc):
+    """(dedup signature, human detail). Our own exceptions carry safe messages;
+    anything else is reported by type only, in case its text holds a URL or secret."""
+    if isinstance(exc, (logic.ApiError, ConfigError)):
+        detail = str(exc)
+    else:
+        detail = type(exc).__name__
+    return f"{type(exc).__name__}:{detail}", detail
