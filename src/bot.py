@@ -37,11 +37,8 @@ PANEL_KEYBOARD = {
     ]
 }
 
-MANUAL_OFF_MESSAGE = (
-    "⛔ Бойлер вимкнено вручну. Він не увімкнеться сам, навіть коли є світло, "
-    "доки адміністратор не натисне «Увімкнути»."
-)
-AUTO_ON_MESSAGE = "🔌 Бойлер увімкнено. Далі ним знову керує автоматичний захист."
+HOLD_NOTE = "Він не увімкнеться сам, навіть коли є світло, доки адміністратор не натисне «Увімкнути»."
+AUTO_NOTE = "Ним знову керує автоматичний захист."
 AUTO_WAIT_MESSAGE = (
     "🔌 Автоматичний режим відновлено. Зараз світла немає (або немає свіжих даних від "
     "інвертора), тому бойлер не вмикається від батареї. Він увімкнеться сам, коли буде світло."
@@ -132,6 +129,19 @@ def replies(found):
         kind = {STATUS: "status", BOILER: "boiler"}.get(command, "help")
         latest[kind] = (message_id, user_id)
     return latest
+
+
+def control_message(action, target, switched):
+    """Reply to a button press. Says whether the plug was actually switched or was
+    already in that state, so the admin isn't told "switched on" for a no-op."""
+    if action == "off":
+        head = "⛔ Бойлер вимкнено вручну." if switched else "⛔ Бойлер вже вимкнено."
+        return f"{head} {HOLD_NOTE}"
+    if target != "on":
+        return AUTO_WAIT_MESSAGE
+    if switched:
+        return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
+    return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."
 
 
 def not_admin_message(user_id, configured):

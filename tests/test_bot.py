@@ -105,6 +105,18 @@ class AdminButtonsTest(unittest.TestCase):
         undated = bot.taps([press(1, panel_date=None)], CHAT)[0]
         self.assertEqual(bot.tap_verdict(undated, self.ADMINS, NOW), "stale")
 
+    def test_control_message_says_switched_or_already(self):
+        self.assertTrue(bot.control_message("on", "on", switched=True).startswith("🔌 Бойлер увімкнено."))
+        already_on = bot.control_message("on", "on", switched=False)
+        self.assertEqual(already_on, "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист.")
+        self.assertTrue(
+            bot.control_message("off", "off", switched=True).startswith("⛔ Бойлер вимкнено вручну.")
+        )
+        already_off = bot.control_message("off", "off", switched=False)
+        self.assertTrue(already_off.startswith("⛔ Бойлер вже вимкнено."))
+        self.assertIn("не увімкнеться сам", already_off)
+        self.assertEqual(bot.control_message("on", None, switched=False), bot.AUTO_WAIT_MESSAGE)  # on battery
+
     def test_not_admin_message_shows_id(self):
         self.assertIn("222", bot.not_admin_message(222, configured=True))
         self.assertIn("не налаштоване", bot.not_admin_message(222, configured=False))

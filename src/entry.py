@@ -349,6 +349,7 @@ class Default(WorkerEntrypoint):
         """Carry out an admin's button press and return the reply. The mode is saved
         only after the plug is in the right state, so a failure changes nothing."""
         target = logic.control_target(action, run.get("desired"))
+        switched = False
         if target is not None:
             try:
                 secrets = self.secrets()
@@ -362,15 +363,16 @@ class Default(WorkerEntrypoint):
                     await asyncio.sleep(1.1)
                     await self.shelly("/device/relay/control", secrets, channel=channel, turn=target)
                     log(f"admin control: switched plug {actual} -> {target}")
+                    switched = True
                 run["plug"] = target
             except Exception as exc:
                 log(f"admin control: Shelly failed: {type(exc).__name__}")
                 return bot.CONTROL_FAILED_MESSAGE
         if action == logic.OFF:
             await self.kv_put(MODE_KEY, logic.OFF)
-            return bot.MANUAL_OFF_MESSAGE
-        await self.env.STATE.delete(MODE_KEY)
-        return bot.AUTO_ON_MESSAGE if target == logic.ON else bot.AUTO_WAIT_MESSAGE
+        else:
+            await self.env.STATE.delete(MODE_KEY)
+        return bot.control_message(action, target, switched)
 
     async def poll_plug(self):
         try:
