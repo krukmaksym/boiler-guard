@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Block commits that would publish secrets.
+
+1. Refuses secret files (.prod.vars, .dev.vars, .env*, .wrangler/) outright.
+2. Refuses staged content containing any real value from .prod.vars / .dev.vars.
+3. Refuses staged content that looks like a JWT or a Shelly/Deye credential assignment.
+
+Enabled with: git config core.hooksPath scripts/hooks
+Never prints the matched secret, only the file and the variable name.
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
+sys.path.insert(0, str(ROOT / "scripts"))
+
+BLOCKED = re.compile(r"(^|/)(\.prod\.vars|\.dev\.vars|\.env)(\..*)?$|(^|/)\.wrangler/")
+ALLOWED = {".prod.vars.example"}
+PATTERNS = {
+    "JWT": re.compile(rb"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    "credential assignment": re.compile(
+        rb"(APP_SECRET|SHELLY_AUTH_KEY|SHA_256_PASSWORD|BEARER_TOKEN)\s*=\s*[\"']?[A-Za-z0-9+/=_-]{16,}"),
+}
+
+
+def real_values():
+    values = {}
+    for name in (".prod.vars", ".dev.vars"):
+        path = ROOT / name
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            m = re.match(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$", line)
+            if m:
+                key, value = m.groups()
+                value = value.strip("\"'")
+                if len(value) >= 6:
+                    values.setdefault(value, key)
+    return values
+
+
+def main():
+    staged = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"]).decode().split("\0")
+    staged = [f for f in staged if f]
+    values = real_values()
+    problems = []
+    for f in staged:
+        if f not in ALLOWED and BLOCKED.search(f):
+            problems.append(f"{f}: secret file must never be committed")
+            continue
+        blob = subprocess.run(["git", "show", f":{f}"], capture_output=True).stdout
+        for value, key in values.items():
+            if value.encode() in blob:
+                problems.append(f"{f}: contains the real value of {key}")
+        if f != "scripts/hooks/pre-commit":
+            for label, pattern in PATTERNS.items():
+                if pattern.search(blob):
+                    problems.append(f"{f}: looks like a {label}")
+    if problems:
+        print("pre-commit: refusing to commit possible secrets:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

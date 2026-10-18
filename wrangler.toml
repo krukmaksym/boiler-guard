@@ -1,0 +1,29 @@
+name = "boiler-guard"
+main = "src/entry.py"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["python_workers"]
+
+# Cron-only Worker: no public URL.
+workers_dev = false
+preview_urls = false
+
+[triggers]
+crons = ["* * * * *"]
+
+# Holds only the auto-refreshed Deye token and the last desired plug state.
+# Credentials live in Worker Secrets (see scripts/upload-secrets.sh).
+[[kv_namespaces]]
+binding = "STATE"
+id = "ab7e5c69f89f42c7af5243d5de4f6c41"
+
+# Non-secret settings.
+[vars]
+DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
+GRID_VOLTAGE_KEY = "GridVoltageL1L2"
+ON_VOLTAGE = "210"
+OFF_VOLTAGE = "205"
+MAX_DATA_AGE_SECONDS = "900"
+SHELLY_CHANNEL = "0"
+
+[observability]
+enabled = true

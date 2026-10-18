@@ -1,0 +1,21 @@
+# Secrets
+.prod.vars
+.prod.vars.*
+!.prod.vars.example
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+
+# Tooling
+.wrangler/
+node_modules/
+__pycache__/
+*.pyc
+
+# Local env
+.venv/
+.venv-workers/
+python_modules/
+src/vendor/
+.DS_Store

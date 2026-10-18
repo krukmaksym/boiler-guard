@@ -1,0 +1,16 @@
+# Copy to .prod.vars (git-ignored) and fill in. Never commit the real file.
+
+# Deye Cloud developer app, created under a READ-ONLY Deye user
+DEYE_APP_ID = "<deye-app-id>"
+APP_SECRET = "<deye-app-secret>"
+USER_EMAIL = "<read-only-user@example.com>"
+SHA_256_PASSWORD = "<sha256-hex-of-read-only-user-password>"
+INVERTER_SN = "<inverter-serial>"
+
+# Optional: a token for the app above, seeded into KV by scripts/upload-secrets.sh
+# BEARER_TOKEN = "<token>"
+
+# Shelly Cloud (Settings -> Authorization cloud key)
+SHELLY_HOST = "shelly-<n>-<region>.shelly.cloud"
+DEVICE_ID = "<shelly-device-id>"
+SHELLY_AUTH_KEY = "<shelly-cloud-auth-key>"

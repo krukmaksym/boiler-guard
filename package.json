@@ -1,0 +1,8 @@
+{
+  "name": "boiler-guard",
+  "private": true,
+  "description": "Pins wrangler so npx/pywrangler never fetch an unreviewed version.",
+  "devDependencies": {
+    "wrangler": "4.151.1"
+  }
+}
