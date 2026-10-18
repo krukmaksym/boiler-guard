@@ -1,0 +1,141 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: jobs can only read the repo. No job needs more.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Supersede stale PR runs, but never cancel a run on main mid-deploy.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PIP_VERSION: "26.2.1" # needed for `pip install --group`
+  NODE_VERSION: "24"
+
+jobs:
+  lint:
+    name: Lint (ruff, shellcheck, actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install pinned dev tools
+        run: |
+          python -m pip install "pip==${PIP_VERSION}"
+          python -m pip install --group dev
+      - name: ruff lint
+        run: ruff check . scripts/hooks/pre-commit
+      - name: ruff format
+        run: ruff format --check . scripts/hooks/pre-commit
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: actionlint
+        run: actionlint
+
+  test:
+    name: Unit tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Scan tracked files for secret files, JWTs and credential assignments
+        run: python scripts/hooks/pre-commit --all
+
+  build:
+    name: Build (wrangler dry-run) + npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install pinned tools
+        run: |
+          npm ci
+          python -m pip install "pip==${PIP_VERSION}"
+          python -m pip install --group dev
+      - name: npm audit
+        run: npm audit --audit-level=high
+      - name: Bundle without deploying
+        run: pywrangler deploy --dry-run --outdir dist
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: [lint, test, secret-scan, build]
+    # Only merges/pushes to main of this repo; never PRs or forks.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'krukmaksym/boiler-guard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install pinned tools
+        run: |
+          npm ci
+          python -m pip install "pip==${PIP_VERSION}"
+          python -m pip install --group dev
+      # Code and [vars] only. Worker Secrets stay in Cloudflare and are untouched
+      # by deploys, so GitHub never holds Deye or Shelly credentials.
+      - name: Deploy
+        run: pywrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

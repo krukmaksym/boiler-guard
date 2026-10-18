@@ -42,22 +42,27 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         path = urlparse(self.path).path
         if path == "/v1.0/account/token":
-            return self.reply({"code": "1000000", "success": True,
-                               "accessToken": "mock-token", "expiresIn": "5183999"})
+            return self.reply(
+                {"code": "1000000", "success": True, "accessToken": "mock-token", "expiresIn": "5183999"}
+            )
         if path == "/v1.0/device/latest":
             print(f"mock: served device/latest ({state['voltage']}V)", flush=True)
-            devices = [{
-                "deviceSn": sn,
-                "deviceType": "INVERTER",
-                "deviceState": 1,
-                "collectionTime": int(time.time()),
-                "dataList": [
-                    {"key": "GridVoltageL1L2", "value": state["voltage"], "unit": "V"},
-                    {"key": "LoadVoltageL1L2", "value": "230.00", "unit": "V"},
-                ],
-            } for sn in body.get("deviceList", [])]
-            return self.reply({"code": "1000000", "msg": "success", "success": True,
-                               "deviceDataList": devices})
+            devices = [
+                {
+                    "deviceSn": sn,
+                    "deviceType": "INVERTER",
+                    "deviceState": 1,
+                    "collectionTime": int(time.time()),
+                    "dataList": [
+                        {"key": "GridVoltageL1L2", "value": state["voltage"], "unit": "V"},
+                        {"key": "LoadVoltageL1L2", "value": "230.00", "unit": "V"},
+                    ],
+                }
+                for sn in body.get("deviceList", [])
+            ]
+            return self.reply(
+                {"code": "1000000", "msg": "success", "success": True, "deviceDataList": devices}
+            )
         self.reply({"success": False, "msg": "not found"}, 404)
 
 

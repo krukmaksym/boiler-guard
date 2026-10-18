@@ -6,6 +6,7 @@
 3. Refuses staged content that looks like a JWT or a Shelly/Deye credential assignment.
 
 Enabled with: git config core.hooksPath scripts/hooks
+With --all it scans every tracked file instead of the staged ones (used by CI).
 Never prints the matched secret, only the file and the variable name.
 """
 
@@ -22,7 +23,8 @@ ALLOWED = {".prod.vars.example"}
 PATTERNS = {
     "JWT": re.compile(rb"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     "credential assignment": re.compile(
-        rb"(APP_SECRET|SHELLY_AUTH_KEY|SHA_256_PASSWORD|BEARER_TOKEN)\s*=\s*[\"']?[A-Za-z0-9+/=_-]{16,}"),
+        rb"(APP_SECRET|SHELLY_AUTH_KEY|SHA_256_PASSWORD|BEARER_TOKEN)\s*=\s*[\"']?[A-Za-z0-9+/=_-]{16,}"
+    ),
 }
 
 
@@ -43,16 +45,22 @@ def real_values():
 
 
 def main():
-    staged = subprocess.check_output(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"]).decode().split("\0")
-    staged = [f for f in staged if f]
+    scan_all = "--all" in sys.argv[1:]
+    if scan_all:
+        listing = ["git", "ls-files", "-z"]
+    else:
+        listing = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"]
+    files = [f for f in subprocess.check_output(listing).decode().split("\0") if f]
     values = real_values()
     problems = []
-    for f in staged:
+    for f in files:
         if f not in ALLOWED and BLOCKED.search(f):
             problems.append(f"{f}: secret file must never be committed")
             continue
-        blob = subprocess.run(["git", "show", f":{f}"], capture_output=True).stdout
+        if scan_all:
+            blob = (ROOT / f).read_bytes()
+        else:
+            blob = subprocess.run(["git", "show", f":{f}"], capture_output=True).stdout
         for value, key in values.items():
             if value.encode() in blob:
                 problems.append(f"{f}: contains the real value of {key}")
@@ -65,6 +73,8 @@ def main():
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         return 1
+    if scan_all:
+        print(f"secret scan: {len(files)} tracked files clean")
     return 0
 
 

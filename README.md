@@ -57,7 +57,7 @@ app, and a Shelly plug on Shelly Cloud.
 
 ```bash
 npm ci                                                  # pinned wrangler
-python3 -m venv .venv && .venv/bin/pip install workers-py==1.17.8 uv==0.13.1
+python3 -m venv .venv && .venv/bin/pip install "pip>=25.1" && .venv/bin/pip install --group dev
 git config core.hooksPath scripts/hooks                 # secret-blocking pre-commit hook
 cp .prod.vars.example .prod.vars                        # then fill it in
 ```
@@ -79,6 +79,30 @@ To change only secrets later: `scripts/upload-secrets.sh .prod.vars` (also seeds
 
 Settings that aren't secret (thresholds, voltage key, data age, Shelly channel)
 are in `[vars]` in `wrangler.toml`.
+
+### CI/CD
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`:
+
+| Job | Checks |
+|---|---|
+| Lint | `ruff check`, `ruff format --check`, `shellcheck`, `actionlint` |
+| Unit tests | `unittest` on Python 3.12 and 3.13 |
+| Secret scan | `scripts/hooks/pre-commit --all` over every tracked file |
+| Build | `npm audit --audit-level=high`, `pywrangler deploy --dry-run` |
+| Deploy | only on push to `main`, only after all of the above pass |
+
+The deploy job ships code and `[vars]` only. Worker Secrets are set once from your
+machine (`scripts/deploy.sh` / `scripts/upload-secrets.sh`) and are never touched by
+deploys, so GitHub holds no Deye or Shelly credentials, just a Cloudflare API token.
+
+One-time setup, in a GitHub environment named `production`:
+
+- Secret `CLOUDFLARE_API_TOKEN`: a Cloudflare API token scoped to your account with
+  **Workers Scripts: Edit**.
+- Variable `CLOUDFLARE_ACCOUNT_ID`: your Cloudflare account ID.
+
+Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 ### Alerts
 

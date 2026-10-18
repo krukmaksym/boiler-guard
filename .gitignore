@@ -19,3 +19,4 @@ __pycache__/
 python_modules/
 src/vendor/
 .DS_Store
+dist/

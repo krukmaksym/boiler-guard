@@ -25,8 +25,9 @@ REQUIRED_SECRETS = (
     "DEVICE_ID",
     "SHELLY_AUTH_KEY",
 )
-TOKEN_KEY = "deye:token"
-TOKEN_BACKOFF_KEY = "deye:token_backoff"
+# KV key names, not credentials.
+TOKEN_KEY = "deye:token"  # noqa: S105
+TOKEN_BACKOFF_KEY = "deye:token_backoff"  # noqa: S105
 TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on bad credentials
 DESIRED_KEY = "state:desired"
 REQUEST_TIMEOUT_MS = 15000
@@ -100,9 +101,7 @@ class Default(WorkerEntrypoint):
 
     async def deye_post(self, path, payload, token=None, query=None):
         """The only way this Worker talks to Deye: read-only allowlisted paths."""
-        url = logic.deye_url(
-            self.var("DEYE_BASE_URL", "https://eu1-developer.deyecloud.com"), path, query
-        )
+        url = logic.deye_url(self.var("DEYE_BASE_URL", "https://eu1-developer.deyecloud.com"), path, query)
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"bearer {token}"
