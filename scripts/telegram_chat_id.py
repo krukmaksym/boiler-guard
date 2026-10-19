@@ -16,12 +16,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import notify  # noqa: E402
 
 
-def read_token(path):
+def read_var(path, name):
     for line in Path(path).read_text().splitlines():
-        m = re.match(r"^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.*?)\s*$", line)
+        m = re.match(rf"^\s*{name}\s*=\s*(.*?)\s*$", line)
         if m:
             return m.group(1).strip("\"'")
-    sys.exit(f"TELEGRAM_BOT_TOKEN not found in {path}")
+    sys.exit(f"{name} not found in {path}")
+
+
+def read_token(path):
+    return read_var(path, "TELEGRAM_BOT_TOKEN")
 
 
 def main(path=".prod.vars"):

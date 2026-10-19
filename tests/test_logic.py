@@ -87,6 +87,25 @@ class HysteresisTest(unittest.TestCase):
         self.assertIsNone(logic.desired_state(None, logic.ON))
 
 
+class PlugPowerTest(unittest.TestCase):
+    def test_gen3_apower(self):
+        data = shelly(True)
+        data["data"]["device_status"]["switch:0"]["apower"] = 1712.4
+        self.assertEqual(logic.plug_power(data), 1712.4)
+
+    def test_gen1_meters(self):
+        data = {"isok": True, "data": {"online": True, "device_status": {"meters": [{"power": 5}]}}}
+        self.assertEqual(logic.plug_power(data), 5.0)
+
+    def test_unknown(self):
+        self.assertIsNone(logic.plug_power(shelly(True)))  # no apower field
+        self.assertIsNone(logic.plug_power(shelly(online=False)))
+        self.assertIsNone(logic.plug_power({"isok": False}))
+        data = shelly(True)
+        data["data"]["device_status"]["switch:0"]["apower"] = "lots"
+        self.assertIsNone(logic.plug_power(data))
+
+
 class ControlTargetTest(unittest.TestCase):
     def test_off_always_switches_off(self):
         for desired in (logic.ON, logic.OFF, None):

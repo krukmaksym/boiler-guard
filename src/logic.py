@@ -157,6 +157,26 @@ def plug_state(data, channel=0):
     return ON if output else OFF
 
 
+def plug_power(data, channel=0):
+    """Live power draw in watts from a Shelly cloud /device/status response, or None."""
+    if not isinstance(data, dict) or not data.get("isok"):
+        return None
+    body = data.get("data") or {}
+    if body.get("online") is not True:
+        return None
+    status = body.get("device_status") or {}
+    power = None
+    switch = status.get(f"switch:{channel}")  # Gen2/Gen3
+    if isinstance(switch, dict):
+        power = switch.get("apower")
+    meters = status.get("meters")  # Gen1
+    if power is None and isinstance(meters, list) and len(meters) > channel:
+        power = meters[channel].get("power")
+    if not isinstance(power, (int, float)) or isinstance(power, bool):
+        return None
+    return float(power)
+
+
 def control_target(action, desired_now):
     """Plug state an admin's button press should produce, or None to leave it.
 
