@@ -131,8 +131,27 @@ For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests
 #### Asking the bot: `/status`
 
 Send `/status` in the chat and the bot replies on its next run (within a minute) with
-grid voltage, the boiler's real on/off state, battery charge and whether protection
-is active. `/start` or `/help` explain what it does.
+grid voltage, the boiler's real on/off state, its live power draw, battery charge and
+whether protection is active. `/start` or `/help` explain what it does.
+
+The power line tells whether the boiler is actually heating: above 20 W it reads
+"гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is
+idle).
+
+#### Pinned menu (no command text in the chat)
+
+In a group, commands show up as `/status@your_bot`. To avoid that, post a menu message
+with **📊 Статус** and **🎛 Керування** buttons once and pin it:
+
+```bash
+python3 -I scripts/telegram_menu.py
+```
+
+Pressing a button sends nothing into the chat; the bot's reply names who asked
+("на запит: Олена"). 📊 Статус works for everyone in the chat, 🎛 Керування opens the
+control panel for admins only. Button presses reach the bot even with Telegram's
+privacy mode on, so the bot still doesn't see the family's other messages. The menu
+buttons don't expire (they only ask for information); the panel's on/off buttons do.
 
 There is no webhook: each run fetches new messages with `getUpdates`, so the Worker
 still has no public URL. Only the configured `TELEGRAM_CHAT_ID` is answered (anyone
@@ -167,6 +186,7 @@ Setup: send `/boiler` in the chat, put the ID from the reply into `.prod.vars` a
 `TELEGRAM_ADMIN_IDS`, and run `scripts/upload-secrets.sh .prod.vars`.
 
 Register the command menu once: `python3 -I scripts/telegram_commands.py`.
+The pinned menu above is the friendlier alternative to typing commands.
 
 ### Alerts
 

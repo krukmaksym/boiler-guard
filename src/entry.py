@@ -270,11 +270,11 @@ class Default(WorkerEntrypoint):
             log("Telegram message sent")
         return ok
 
-    # --- commands (/status, /help) and admin buttons (/boiler) ---------------
+    # --- commands, pinned menu and admin buttons -----------------------------
 
     async def answer_commands(self, run):
         """Poll for new updates: apply the admin's latest button press, then answer
-        /status, /boiler and /help from the configured chat."""
+        /status, /boiler, /help and pinned-menu presses from the configured chat."""
         token, chat_id = self.telegram_config()
         if not token:
             return
@@ -294,33 +294,44 @@ class Default(WorkerEntrypoint):
         admins = bot.admin_ids(self.var("TELEGRAM_ADMIN_IDS", None))
         await self.handle_taps(bot.taps(updates, chat_id), admins, run)
 
-        wanted = bot.replies(bot.requests(updates, chat_id))
-        if "help" in wanted:
-            await self.send_telegram(bot.HELP_MESSAGE, reply_to=wanted["help"][0])
-        boiler = wanted.get("boiler")
-        if boiler and str(boiler[1]) not in admins:
-            await self.send_telegram(bot.not_admin_message(boiler[1], bool(admins)), reply_to=boiler[0])
-            boiler = None
-        if "status" in wanted or boiler:
-            text = await self.status_text(run)
-            if "status" in wanted:
-                await self.send_telegram(text, reply_to=wanted["status"][0])
-                log("answered /status")
-            if boiler:
-                await self.send_telegram(
-                    bot.panel_message(text), reply_to=boiler[0], markup=bot.PANEL_KEYBOARD
-                )
-                log("sent /boiler panel")
+        menu = bot.menu_taps(updates, chat_id)
+        for tap in menu:  # stop the buttons' spinners; may fail if too old, harmless
+            await self.telegram("answerCallbackQuery", {"callback_query_id": tap["id"]})
 
-    async def status_text(self, run):
-        plug = run["plug"] if "plug" in run else await self.poll_plug()
-        return bot.status_message(
-            run.get("voltage"),
-            plug,
-            run.get("soc"),
-            off_below=float(self.var("OFF_VOLTAGE", "205")),
-            manual_off=await self.kv_get(MODE_KEY) == logic.OFF,
-        )
+        wanted = bot.replies(bot.requests(updates, chat_id), menu)
+        if "help" in wanted:
+            await self.send_telegram(bot.HELP_MESSAGE, reply_to=wanted["help"]["reply_to"])
+        boiler = wanted.get("boiler")
+        if boiler and str(boiler["user"]) not in admins:
+            text = bot.not_admin_message(boiler["user"], bool(admins))
+            await self.send_telegram(text, reply_to=boiler["reply_to"])
+            boiler = None
+        status = wanted.get("status")
+        if status or boiler:
+            snapshot = await self.status_snapshot(run)
+            if status:
+                text = bot.status_message(**snapshot, asked_by=status["name"])
+                await self.send_telegram(text, reply_to=status["reply_to"])
+                log("answered status")
+            if boiler:
+                text = bot.panel_message(bot.status_message(**snapshot, asked_by=boiler["name"]))
+                await self.send_telegram(text, reply_to=boiler["reply_to"], markup=bot.PANEL_KEYBOARD)
+                log("sent control panel")
+
+    async def status_snapshot(self, run):
+        """Everything a status reply shows. Shelly is polled fresh (state and live
+        power) since this only runs when someone asks."""
+        if "plug" in run:
+            await asyncio.sleep(1.1)  # Shelly was already called this run (~1 request/second)
+        plug, power = await self.poll_plug()
+        return {
+            "voltage": run.get("voltage"),
+            "plug": plug,
+            "soc": run.get("soc"),
+            "off_below": float(self.var("OFF_VOLTAGE", "205")),
+            "manual_off": await self.kv_get(MODE_KEY) == logic.OFF,
+            "power": power,
+        }
 
     async def handle_taps(self, presses, admins, run):
         """Answer every button press; apply only the latest valid one from an admin."""
@@ -375,12 +386,14 @@ class Default(WorkerEntrypoint):
         return bot.control_message(action, target, switched)
 
     async def poll_plug(self):
+        """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""
         try:
             data = await self.shelly("/device/status", self.secrets())
-            return logic.plug_state(data, int(self.var("SHELLY_CHANNEL", "0")))
         except Exception as exc:
             log(f"status: Shelly poll failed: {type(exc).__name__}")
-            return None
+            return None, None
+        channel = int(self.var("SHELLY_CHANNEL", "0"))
+        return logic.plug_state(data, channel), logic.plug_power(data, channel)
 
     # --- main loop ----------------------------------------------------------
 

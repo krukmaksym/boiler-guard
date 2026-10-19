@@ -2,8 +2,9 @@
 
 The Worker polls getUpdates once per run instead of exposing a webhook, so it
 still has no public URL. Only messages from the configured chat are handled.
-/status and /help are read-only for everyone in the chat; the /boiler buttons
-work only for Telegram user IDs listed in TELEGRAM_ADMIN_IDS.
+/status, /help and the pinned menu's 📊 button are read-only for everyone in the
+chat; the boiler on/off buttons work only for Telegram user IDs listed in
+TELEGRAM_ADMIN_IDS.
 """
 
 STATUS = "/status"
@@ -14,13 +15,34 @@ HELP_COMMANDS = frozenset({"/start", "/help"})
 # Telegram's queue (or an old panel scrolled up in the chat) can't act later.
 PANEL_TTL_SECONDS = 10 * 60
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
+# The pinned menu (scripts/telegram_menu.py). Its buttons never expire: they only
+# ask for the status or a control panel, and the panel's own buttons still expire.
+MENU_ACTIONS = {"menu:status": "status", "menu:boiler": "boiler"}
+HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
+NAME_MAX = 32
 
 HELP_MESSAGE = (
     "👋 Я стежу за світлом і бойлером: вимикаю бойлер, коли зникає світло, "
     "і вмикаю, коли воно повертається.\n"
-    "/status — поточний стан (відповідь протягом хвилини).\n"
-    "/boiler — керування бойлером (лише для адміністратора)."
+    "Кнопки в закріпленому повідомленні або команди (відповідь протягом хвилини):\n"
+    "📊 /status — поточний стан.\n"
+    "🎛 /boiler — керування бойлером (лише для адміністратора)."
 )
+
+MENU_MESSAGE = (
+    "🤖 Вартовий світла і бойлера\n"
+    "Натисніть кнопку, і відповідь прийде протягом хвилини:\n"
+    "📊 Статус — світло, бойлер, потужність, батарея.\n"
+    "🎛 Керування — увімкнути або вимкнути бойлер (лише адміністратор)."
+)
+MENU_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "📊 Статус", "callback_data": "menu:status"},
+            {"text": "🎛 Керування", "callback_data": "menu:boiler"},
+        ]
+    ]
+}
 
 # Shown in Telegram's command menu (setMyCommands).
 COMMANDS = [
@@ -46,7 +68,9 @@ AUTO_WAIT_MESSAGE = (
 CONTROL_FAILED_MESSAGE = (
     "❌ Не вдалося змінити стан бойлера: розетка Shelly не відповідає. Спробуйте ще раз пізніше."
 )
-STALE_PANEL_MESSAGE = "⌛️ Ця панель застаріла. Надішліть /boiler, щоб отримати нову."
+STALE_PANEL_MESSAGE = (
+    "⌛️ Ця панель застаріла. Натисніть «🎛 Керування» в закріпленому повідомленні, щоб отримати нову."
+)
 
 
 def command_of(text):
@@ -102,6 +126,24 @@ def taps(updates, chat_id):
     return found
 
 
+def menu_taps(updates, chat_id):
+    """Presses on the pinned menu in the allowed chat, oldest first:
+    {"id", "kind" ('status' or 'boiler'), "user", "name"}."""
+    found = []
+    for update in updates or []:
+        query = update.get("callback_query") if isinstance(update, dict) else None
+        if not isinstance(query, dict) or not _in_chat(query.get("message"), chat_id):
+            continue
+        kind = MENU_ACTIONS.get(query.get("data"))
+        if kind is None:
+            continue
+        sender = query.get("from") or {}
+        found.append(
+            {"id": query.get("id"), "kind": kind, "user": sender.get("id"), "name": sender.get("first_name")}
+        )
+    return found
+
+
 def tap_verdict(tap, admins, now):
     """'ok', 'not_admin' or 'stale'. Admin is checked by Telegram user ID, which
     Telegram authenticates, not by chat membership."""
@@ -121,13 +163,16 @@ def next_offset(updates, current):
     return max(ids) + 1 if ids else current
 
 
-def replies(found):
-    """At most one reply per kind per run, each answering the latest ask:
-    {kind: (message_id, user_id)}."""
+def replies(found, menu=()):
+    """At most one reply per kind per run, each answering the latest ask (menu presses
+    count after commands): {kind: {"reply_to", "user", "name"}}. A command is answered
+    as a reply to it; a menu press has nothing to reply to, so the answer names who asked."""
     latest = {}
     for command, message_id, user_id in found:
         kind = {STATUS: "status", BOILER: "boiler"}.get(command, "help")
-        latest[kind] = (message_id, user_id)
+        latest[kind] = {"reply_to": message_id, "user": user_id, "name": None}
+    for tap in menu:
+        latest[tap["kind"]] = {"reply_to": None, "user": tap["user"], "name": tap["name"]}
     return latest
 
 
@@ -150,8 +195,18 @@ def not_admin_message(user_id, configured):
     return f"🔒 Керувати бойлером може лише адміністратор. Ваш Telegram ID: {user_id}"
 
 
-def status_message(voltage, plug, soc, off_below=205.0, manual_off=False):
-    lines = ["📊 Поточний стан"]
+def power_line(watts):
+    if watts >= HEATING_WATTS:
+        return f"⚡️ Потужність: {watts:.0f} Вт (гріє воду)"
+    return f"⚡️ Потужність: {watts:.0f} Вт (вода нагріта)"
+
+
+def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=None, asked_by=None):
+    header = "📊 Поточний стан"
+    if isinstance(asked_by, str) and asked_by.strip():
+        # Plain text (no parse_mode), so a name can't inject formatting or links.
+        header += f" · на запит: {asked_by.strip()[:NAME_MAX]}"
+    lines = [header]
     if voltage is None:
         lines.append("❔ Немає свіжих даних від інвертора Deye")
     elif voltage >= off_below:
@@ -160,6 +215,8 @@ def status_message(voltage, plug, soc, off_below=205.0, manual_off=False):
         lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
     if plug == "on":
         lines.append("🔥 Бойлер увімкнений")
+        if power is not None:
+            lines.append(power_line(power))
     elif plug == "off":
         lines.append("💤 Бойлер вимкнений")
     else:
