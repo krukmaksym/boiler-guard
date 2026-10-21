@@ -409,12 +409,9 @@ class Default(WorkerEntrypoint):
             return
 
         previous = await self.kv_get(DESIRED_KEY)
-        desired = logic.desired_state(
-            voltage,
-            previous,
-            on_at=float(self.var("ON_VOLTAGE", "210")),
-            off_below=float(self.var("OFF_VOLTAGE", "205")),
-        )
+        on_at = float(self.var("ON_VOLTAGE", "210"))
+        off_below = float(self.var("OFF_VOLTAGE", "205"))
+        desired = logic.desired_state(voltage, previous, on_at=on_at, off_below=off_below)
         run["desired"] = desired
         if desired is None or desired == previous:
             log(f"grid {voltage:.1f}V, desired={desired}; no change")
@@ -443,7 +440,16 @@ class Default(WorkerEntrypoint):
 
         await self.kv_put(DESIRED_KEY, desired)
         outbox.append(
-            notify.on_switched(state, previous, desired, voltage, switched=actual != target, held=held)
+            notify.on_switched(
+                state,
+                previous,
+                desired,
+                voltage,
+                switched=actual != target,
+                held=held,
+                off_below=off_below,
+                on_at=on_at,
+            )
         )
 
 

@@ -70,6 +70,33 @@ class SwitchTest(unittest.TestCase):
     def test_first_run_is_silent(self):
         self.assertIsNone(notify.on_switched({}, None, "on", 230.0, switched=False))
 
+    def test_low_voltage_off_and_restored(self):
+        state = {}
+        off = notify.on_switched(state, "on", "off", 204.2, switched=True, off_below=205.0, on_at=210.0)
+        self.assertIn("Низька напруга", off)
+        self.assertIn("204.2 В", off)
+        self.assertIn("поріг 205 В", off)
+        self.assertIn("до 210 В", off)
+        self.assertNotIn("Зникло світло", off)
+        on = notify.on_switched(state, "off", "on", 213.4, switched=True)
+        self.assertIn("Напруга в мережі відновилася", on)
+        self.assertIn("увімкнено", on)
+        self.assertEqual(state, {})
+
+    def test_low_voltage_already_off_and_held(self):
+        state = {}
+        self.assertIn("уже був вимкнений", notify.on_switched(state, "on", "off", 204.6, switched=False))
+        held = notify.on_switched(state, "off", "on", 211.0, switched=False, held=True)
+        self.assertIn("відновилася", held)
+        self.assertIn("лишається вимкненим", held)
+
+    def test_outage_clears_low_voltage_flag(self):
+        state = {}
+        notify.on_switched(state, None, "off", 204.0, switched=True)  # first run: silent, flag kept
+        self.assertTrue(state["low_voltage"])
+        notify.on_switched(state, "on", "off", 0.0, switched=True)
+        self.assertIn("Світло повернулося", notify.on_switched(state, "off", "on", 226.0, switched=True))
+
     def test_switch_failed_once_per_state_and_cleared_by_success(self):
         state = {}
         self.assertIn("вимкніть бойлер вручну", notify.on_switch_failed(state, "off"))

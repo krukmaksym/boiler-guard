@@ -11,6 +11,8 @@ _TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
 BLIND_AFTER_SECONDS = 15 * 60
 ERROR_REPEAT_SECONDS = 60 * 60  # the same error is re-sent at most hourly
+# Below this the grid is gone; between this and OFF_VOLTAGE it is present but too low.
+GRID_LOST_BELOW = 100.0
 
 
 class NotifyError(Exception):
@@ -51,6 +53,22 @@ def grid_message(desired, voltage, switched, held=False):
     else:
         tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
     return f"✅ Світло повернулося (мережа {_v(voltage)}). {tail}"
+
+
+def low_voltage_message(voltage, switched, off_below, on_at):
+    """Grid is present but below OFF_VOLTAGE. One decimal: 204.6 V must not read as 205 V."""
+    head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В)."
+    if not switched:
+        return f"{head} Бойлер уже був вимкнений."
+    return f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В."
+
+
+def voltage_restored_message(voltage, switched, held=False):
+    if held:
+        tail = "Бойлер лишається вимкненим: його вимкнули вручну."
+    else:
+        tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
+    return f"✅ Напруга в мережі відновилася ({voltage:.1f} В). {tail}"
 
 
 def switch_failed_message(desired):
@@ -111,12 +129,28 @@ def on_switch_failed(state, desired):
     return switch_failed_message(desired)
 
 
-def on_switched(state, previous, desired, voltage, switched, held=False):
+def on_switched(state, previous, desired, voltage, switched, held=False, off_below=205.0, on_at=210.0):
     """Desired state changed and was applied. Silent on the very first run (no previous).
-    held: grid is back but the admin switched the boiler off by hand, so it stays off."""
+    held: grid is back but the admin switched the boiler off by hand, so it stays off.
+    A switch-off with grid still present (low voltage) is remembered, so the switch-on
+    after it says the voltage recovered rather than that the grid came back."""
     state.pop("switch_failed", None)
+    if desired == "off":
+        low = voltage >= GRID_LOST_BELOW
+        if low:
+            state["low_voltage"] = True
+        else:
+            state.pop("low_voltage", None)
+        if previous is None:
+            return None
+        if low:
+            return low_voltage_message(voltage, switched, off_below, on_at)
+        return grid_message(desired, voltage, switched)
+    low = state.pop("low_voltage", False)
     if previous is None:
         return None
+    if low:
+        return voltage_restored_message(voltage, switched, held)
     return grid_message(desired, voltage, switched, held)
 
 
