@@ -83,15 +83,32 @@ def switch_failed_message(desired):
     )
 
 
-BLIND_MESSAGE = (
-    "⚠️ Вже 15 хвилин немає даних від інвертора Deye. "
-    "Автоматичне вимкнення бойлера тимчасово не працює. "
-    "Якщо зникне світло — вимкніть бойлер вручну."
-)
+# Why Deye gave no usable reading, by logic.reading_problem() code (plus "unreachable").
+BLIND_REASONS = {
+    "unreachable": "Deye Cloud не відповідає",
+    "api": "Deye Cloud повертає помилку",
+    "missing": "Deye не повертає даних про інвертор",
+    "offline": "Deye показує інвертор офлайн (ймовірно, у його Wi-Fi-логера немає інтернету)",
+    "stale": "дані від інвертора не оновлюються (ймовірно, у його Wi-Fi-логера немає інтернету)",
+    "no_value": "Deye не передає напругу мережі",
+}
 
 
-def blind_recovered_message(voltage):
-    return f"✅ Дані від інвертора Deye знову надходять (мережа {_v(voltage)}). Захист бойлера працює."
+def blind_message(reason=None):
+    cause = BLIND_REASONS.get(reason)
+    return (
+        "⚠️ Вже 15 хвилин немає даних від інвертора Deye"
+        + (f": {cause}" if cause else "")
+        + ". Автоматичне вимкнення бойлера тимчасово не працює. "
+        "Якщо зникне світло — вимкніть бойлер вручну."
+    )
+
+
+def blind_recovered_message(voltage, minutes):
+    return (
+        f"✅ Дані від інвертора Deye знову надходять (мережа {_v(voltage)}). "
+        f"Їх не було {minutes:.0f} хв. Захист бойлера працює."
+    )
 
 
 def error_message(detail):
@@ -108,17 +125,18 @@ RECOVERED_MESSAGE = "✅ boiler-guard знову працює нормально
 # Each takes the state dict and returns a message (or None), updating state in place.
 
 
-def on_voltage(state, voltage, now):
-    """Track how long Deye has been unavailable (voltage None)."""
+def on_voltage(state, voltage, now, reason=None):
+    """Track how long Deye has been unavailable (voltage None). reason: why, as a
+    BLIND_REASONS code, named in the alert; the recovery message says how long it lasted."""
     if voltage is None:
         since = state.setdefault("blind_since", now)
         if not state.get("blind_notified") and now - since >= BLIND_AFTER_SECONDS:
             state["blind_notified"] = True
-            return BLIND_MESSAGE
+            return blind_message(reason)
         return None
     notified = state.pop("blind_notified", False)
-    state.pop("blind_since", None)
-    return blind_recovered_message(voltage) if notified else None
+    since = state.pop("blind_since", now)
+    return blind_recovered_message(voltage, (now - since) / 60) if notified else None
 
 
 def on_switch_failed(state, desired):

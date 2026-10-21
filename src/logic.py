@@ -85,33 +85,52 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
     and stay ~230V on battery, so they must never be mistaken for grid.
     None covers: failed response, SN missing, inverter offline, stale or missing reading.
     """
-    return _reading(_fresh_device(data, sn, now, max_age_seconds), key)
+    return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
 
 
 def battery_soc(data, sn, now, key="SOC", max_age_seconds=900):
     """Battery state of charge (%) from the same response, or None."""
-    return _reading(_fresh_device(data, sn, now, max_age_seconds), key)
+    return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
+
+
+def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
+    """Why grid_voltage() gives None, as (code, log detail); None when it doesn't.
+
+    Codes: "api" (Deye said no), "missing" (inverter not in the response),
+    "offline" (Deye marks the inverter offline), "stale" (no fresh upload),
+    "no_value" (the voltage key is missing or not a number).
+    """
+    device, problem = _fresh_device(data, sn, now, max_age_seconds)
+    if problem:
+        return problem
+    if _reading(device, key) is None:
+        return "no_value", f"no {key} value"
+    return None
 
 
 def _fresh_device(data, sn, now, max_age_seconds):
-    """The inverter's entry if the response is successful, online and fresh, else None."""
+    """(the inverter's entry, None) if the response is successful, online and fresh,
+    else (None, (code, detail)) saying why not."""
     if not isinstance(data, dict) or not data.get("success"):
-        return None
+        msg = data.get("msg") if isinstance(data, dict) else None
+        return None, ("api", f"Deye returned no data (msg={str(msg)[:80]!r})")
     device = next(
         (d for d in data.get("deviceDataList") or [] if str(d.get("deviceSn")) == str(sn)),
         None,
     )
-    if device is None or device.get("deviceState") != 1:
-        return None
+    if device is None:
+        return None, ("missing", "inverter not in Deye response")
+    if device.get("deviceState") != 1:
+        return None, ("offline", f"inverter offline (deviceState={device.get('deviceState')!r})")
 
     collected = device.get("collectionTime")
     if not isinstance(collected, (int, float)) or isinstance(collected, bool):
-        return None
+        return None, ("stale", "no collectionTime")
     if collected > 1e12:  # milliseconds
         collected /= 1000
     if now - collected > max_age_seconds:
-        return None
-    return device
+        return None, ("stale", f"last upload {(now - collected) / 60:.0f} min ago")
+    return device, None
 
 
 def _reading(device, key):

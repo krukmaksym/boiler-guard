@@ -61,6 +61,21 @@ class GridVoltageTest(unittest.TestCase):
         data["deviceDataList"][0]["dataList"] = [i for i in items if i["key"] != "GridVoltageL1L2"]
         self.assertIsNone(logic.grid_voltage(data, SN, NOW))
 
+    def test_reading_problem(self):
+        def code(data, now=NOW):
+            problem = logic.reading_problem(data, SN, now)
+            return problem and problem[0]
+
+        self.assertIsNone(logic.reading_problem(deye(), SN, NOW))
+        self.assertEqual(code(None), "api")
+        self.assertEqual(code({"success": False, "msg": "x"}), "api")
+        self.assertEqual(code(deye(sn="other")), "missing")
+        self.assertEqual(code(deye(state=2)), "offline")
+        self.assertEqual(code(deye(collected=None)), "stale")
+        stale = logic.reading_problem(deye(collected=NOW - 1800), SN, NOW)
+        self.assertEqual(stale, ("stale", "last upload 30 min ago"))
+        self.assertEqual(code(deye(voltage="n/a")), "no_value")
+
     def test_battery_soc(self):
         data = deye()
         data["deviceDataList"][0]["dataList"].append({"key": "SOC", "value": "87", "unit": "%"})

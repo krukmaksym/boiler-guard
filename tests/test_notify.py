@@ -34,13 +34,20 @@ class BlindTest(unittest.TestCase):
         state = {}
         self.assertIsNone(notify.on_voltage(state, None, T0))
         self.assertIsNone(notify.on_voltage(state, None, T0 + 14 * 60))
-        msg = notify.on_voltage(state, None, T0 + 15 * 60)
+        msg = notify.on_voltage(state, None, T0 + 15 * 60, "stale")
         self.assertIn("15 хвилин", msg)
+        self.assertIn("не оновлюються", msg)
         self.assertIsNone(notify.on_voltage(state, None, T0 + 30 * 60))  # no repeat
-        recovered = notify.on_voltage(state, 226.4, T0 + 31 * 60)
+        recovered = notify.on_voltage(state, 226.4, T0 + 32 * 60)
         self.assertIn("знову надходять", recovered)
         self.assertIn("226 В", recovered)
+        self.assertIn("не було 32 хв", recovered)
         self.assertEqual(state, {})
+
+    def test_unknown_reason_is_left_out(self):
+        self.assertIn("Deye. Автоматичне", notify.blind_message(None))
+        self.assertIn("Deye. Автоматичне", notify.blind_message("whatever"))
+        self.assertIn("офлайн", notify.blind_message("offline"))
 
     def test_short_glitch_is_silent(self):
         state = {}
