@@ -450,6 +450,7 @@ class Default(WorkerEntrypoint):
                 held=held,
                 off_below=off_below,
                 on_at=on_at,
+                now=time.time(),
             )
         )
 

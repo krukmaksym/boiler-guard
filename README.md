@@ -108,9 +108,11 @@ Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
-- grid is lost and the boiler is switched off, and when grid returns and it's back on;
+- grid is lost and the boiler is switched off, and when grid returns and it's back on
+  (saying how long the outage lasted);
 - grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) and the boiler is switched off,
-  and when it recovers to `ON_VOLTAGE` (below 100 V counts as an outage, not low voltage);
+  and when it recovers to `ON_VOLTAGE`, with how long it lasted (below 100 V counts as an
+  outage, not low voltage);
 - Deye has given no trustworthy data for 15 minutes (protection paused), with the likely
   cause (Deye unreachable, inverter offline, stale upload, ...), and on recovery with how
   long the gap lasted. Every such run also logs the exact cause, e.g.

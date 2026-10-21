@@ -41,10 +41,20 @@ def _v(voltage):
     return f"{voltage:.0f} В"
 
 
+def duration_text(seconds):
+    """ "45 хв" or "2 год 5 хв"; at least 1 хв."""
+    minutes = max(round(seconds / 60), 1)
+    hours, minutes = divmod(minutes, 60)
+    if not hours:
+        return f"{minutes} хв"
+    return f"{hours} год {minutes} хв" if minutes else f"{hours} год"
+
+
 # --- messages (Ukrainian, written for the whole family) ----------------------
 
 
-def grid_message(desired, voltage, switched, held=False):
+def grid_message(desired, voltage, switched, held=False, lasted=None):
+    """lasted: seconds since the switch-off, named when the grid returns (if known)."""
     if desired == "off":
         tail = "Бойлер вимкнено, щоб не розряджати батарею." if switched else "Бойлер уже був вимкнений."
         return f"⚡️ Зникло світло (мережа {_v(voltage)}). {tail}"
@@ -52,7 +62,8 @@ def grid_message(desired, voltage, switched, held=False):
         tail = "Бойлер лишається вимкненим: його вимкнули вручну."
     else:
         tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
-    return f"✅ Світло повернулося (мережа {_v(voltage)}). {tail}"
+    gap = f" Світла не було {duration_text(lasted)}." if lasted is not None else ""
+    return f"✅ Світло повернулося (мережа {_v(voltage)}).{gap} {tail}"
 
 
 def low_voltage_message(voltage, switched, off_below, on_at):
@@ -63,12 +74,13 @@ def low_voltage_message(voltage, switched, off_below, on_at):
     return f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В."
 
 
-def voltage_restored_message(voltage, switched, held=False):
+def voltage_restored_message(voltage, switched, held=False, lasted=None):
     if held:
         tail = "Бойлер лишається вимкненим: його вимкнули вручну."
     else:
         tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
-    return f"✅ Напруга в мережі відновилася ({voltage:.1f} В). {tail}"
+    gap = f" Низька напруга трималася {duration_text(lasted)}." if lasted is not None else ""
+    return f"✅ Напруга в мережі відновилася ({voltage:.1f} В).{gap} {tail}"
 
 
 def switch_failed_message(desired):
@@ -104,10 +116,10 @@ def blind_message(reason=None):
     )
 
 
-def blind_recovered_message(voltage, minutes):
+def blind_recovered_message(voltage, lasted):
     return (
         f"✅ Дані від інвертора Deye знову надходять (мережа {_v(voltage)}). "
-        f"Їх не було {minutes:.0f} хв. Захист бойлера працює."
+        f"Їх не було {duration_text(lasted)}. Захист бойлера працює."
     )
 
 
@@ -136,7 +148,7 @@ def on_voltage(state, voltage, now, reason=None):
         return None
     notified = state.pop("blind_notified", False)
     since = state.pop("blind_since", now)
-    return blind_recovered_message(voltage, (now - since) / 60) if notified else None
+    return blind_recovered_message(voltage, now - since) if notified else None
 
 
 def on_switch_failed(state, desired):
@@ -147,13 +159,18 @@ def on_switch_failed(state, desired):
     return switch_failed_message(desired)
 
 
-def on_switched(state, previous, desired, voltage, switched, held=False, off_below=205.0, on_at=210.0):
+def on_switched(
+    state, previous, desired, voltage, switched, held=False, off_below=205.0, on_at=210.0, now=None
+):
     """Desired state changed and was applied. Silent on the very first run (no previous).
     held: grid is back but the admin switched the boiler off by hand, so it stays off.
     A switch-off with grid still present (low voltage) is remembered, so the switch-on
-    after it says the voltage recovered rather than that the grid came back."""
+    after it says the voltage recovered rather than that the grid came back. The
+    switch-off time is remembered too, so the switch-on says how long it lasted."""
     state.pop("switch_failed", None)
     if desired == "off":
+        if now is not None:
+            state["off_since"] = now
         low = voltage >= GRID_LOST_BELOW
         if low:
             state["low_voltage"] = True
@@ -165,11 +182,13 @@ def on_switched(state, previous, desired, voltage, switched, held=False, off_bel
             return low_voltage_message(voltage, switched, off_below, on_at)
         return grid_message(desired, voltage, switched)
     low = state.pop("low_voltage", False)
+    since = state.pop("off_since", None)
     if previous is None:
         return None
+    lasted = now - since if now is not None and since is not None else None
     if low:
-        return voltage_restored_message(voltage, switched, held)
-    return grid_message(desired, voltage, switched, held)
+        return voltage_restored_message(voltage, switched, held, lasted)
+    return grid_message(desired, voltage, switched, held, lasted)
 
 
 def on_error(state, signature, detail, now):
