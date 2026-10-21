@@ -172,20 +172,21 @@ class Default(WorkerEntrypoint):
         return data
 
     async def deye_reading(self, secrets):
-        """(grid voltage, battery %) from one Deye call; (None, None) when Deye is
-        unavailable for any reason."""
+        """(grid voltage, battery %, problem) from one Deye call. Voltage is None when
+        Deye is unavailable for any reason, and problem is then (code, log detail)."""
         try:
             data = await self.deye_latest(secrets)
         except Exception as exc:  # network errors, bad token response, ...
             log(f"Deye unavailable: {type(exc).__name__}: {exc}")
-            return None, None
+            return None, None, ("unreachable", type(exc).__name__)
         now = time.time()
         max_age = int(self.var("MAX_DATA_AGE_SECONDS", "900"))
         sn = secrets["INVERTER_SN"]
-        voltage = logic.grid_voltage(
-            data, sn, now=now, key=self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2"), max_age_seconds=max_age
-        )
-        return voltage, logic.battery_soc(data, sn, now=now, max_age_seconds=max_age)
+        key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
+        voltage = logic.grid_voltage(data, sn, now=now, key=key, max_age_seconds=max_age)
+        soc = logic.battery_soc(data, sn, now=now, max_age_seconds=max_age)
+        problem = logic.reading_problem(data, sn, now=now, key=key, max_age_seconds=max_age)
+        return voltage, soc, problem
 
     # --- Shelly -----------------------------------------------------------
 
@@ -401,11 +402,11 @@ class Default(WorkerEntrypoint):
         secrets = self.secrets()
         channel = int(self.var("SHELLY_CHANNEL", "0"))
 
-        voltage, soc = await self.deye_reading(secrets)
+        voltage, soc, problem = await self.deye_reading(secrets)
         run.update(voltage=voltage, soc=soc)
-        outbox.append(notify.on_voltage(state, voltage, time.time()))
+        outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
         if voltage is None:
-            log("no trustworthy grid reading; leaving plug as is")
+            log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
             return
 
         previous = await self.kv_get(DESIRED_KEY)
@@ -449,6 +450,7 @@ class Default(WorkerEntrypoint):
                 held=held,
                 off_below=off_below,
                 on_at=on_at,
+                now=time.time(),
             )
         )
 

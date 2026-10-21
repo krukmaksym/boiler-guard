@@ -34,13 +34,20 @@ class BlindTest(unittest.TestCase):
         state = {}
         self.assertIsNone(notify.on_voltage(state, None, T0))
         self.assertIsNone(notify.on_voltage(state, None, T0 + 14 * 60))
-        msg = notify.on_voltage(state, None, T0 + 15 * 60)
+        msg = notify.on_voltage(state, None, T0 + 15 * 60, "stale")
         self.assertIn("15 хвилин", msg)
+        self.assertIn("не оновлюються", msg)
         self.assertIsNone(notify.on_voltage(state, None, T0 + 30 * 60))  # no repeat
-        recovered = notify.on_voltage(state, 226.4, T0 + 31 * 60)
+        recovered = notify.on_voltage(state, 226.4, T0 + 32 * 60)
         self.assertIn("знову надходять", recovered)
         self.assertIn("226 В", recovered)
+        self.assertIn("не було 32 хв", recovered)
         self.assertEqual(state, {})
+
+    def test_unknown_reason_is_left_out(self):
+        self.assertIn("Deye. Автоматичне", notify.blind_message(None))
+        self.assertIn("Deye. Автоматичне", notify.blind_message("whatever"))
+        self.assertIn("офлайн", notify.blind_message("offline"))
 
     def test_short_glitch_is_silent(self):
         state = {}
@@ -58,6 +65,30 @@ class SwitchTest(unittest.TestCase):
         on = notify.on_switched(state, "off", "on", 226.0, switched=True)
         self.assertIn("Світло повернулося", on)
         self.assertIn("увімкнено", on)
+
+    def test_outage_length_on_return(self):
+        state = {}
+        notify.on_switched(state, "on", "off", 0.0, switched=True, now=T0)
+        on = notify.on_switched(state, "off", "on", 226.0, switched=True, now=T0 + 2 * 3600 + 5 * 60)
+        self.assertIn("Світла не було 2 год 5 хв.", on)
+        self.assertEqual(state, {})
+
+    def test_low_voltage_length_on_return(self):
+        state = {}
+        notify.on_switched(state, "on", "off", 204.2, switched=True, now=T0)
+        on = notify.on_switched(state, "off", "on", 212.0, switched=True, now=T0 + 40 * 60)
+        self.assertIn("Низька напруга трималася 40 хв.", on)
+
+    def test_no_length_when_switch_off_time_unknown(self):
+        # e.g. the switch-off happened before this was deployed
+        on = notify.on_switched({}, "off", "on", 226.0, switched=True, now=T0)
+        self.assertEqual(on, "✅ Світло повернулося (мережа 226 В). Бойлер знову увімкнено.")
+
+    def test_duration_text(self):
+        self.assertEqual(notify.duration_text(10), "1 хв")
+        self.assertEqual(notify.duration_text(59 * 60), "59 хв")
+        self.assertEqual(notify.duration_text(3600), "1 год")
+        self.assertEqual(notify.duration_text(3600 + 29 * 60 + 40), "1 год 30 хв")
 
     def test_grid_back_while_held_off(self):
         msg = notify.on_switched({}, "off", "on", 226.0, switched=False, held=True)
