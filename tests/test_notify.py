@@ -16,10 +16,8 @@ class TelegramUrlTest(unittest.TestCase):
 
     def test_method_allowlist(self):
         self.assertTrue(notify.telegram_api_url(TOKEN, "getUpdates").endswith("/getUpdates"))
-        self.assertTrue(
-            notify.telegram_api_url(TOKEN, "answerCallbackQuery").endswith("/answerCallbackQuery")
-        )
-        for method in ("deleteMessage", "setWebhook", "sendMessage/../x"):
+        # answerCallbackQuery included: a cron run sees presses too late to answer them.
+        for method in ("deleteMessage", "setWebhook", "answerCallbackQuery", "sendMessage/../x"):
             with self.assertRaises(notify.NotifyError):
                 notify.telegram_api_url(TOKEN, method)
 

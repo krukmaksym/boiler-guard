@@ -20,7 +20,7 @@ class NotifyError(Exception):
 
 
 # The only Telegram Bot API methods this project ever calls.
-TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands", "answerCallbackQuery"})
+TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands"})
 
 
 def telegram_api_url(token, method):
