@@ -25,12 +25,12 @@ def update(update_id, text, chat_id=CHAT, message_id=None, user_id=ADMIN):
     }
 
 
-def press(update_id, data="boiler:off", user_id=ADMIN, chat_id=CHAT, panel_date=NOW - 60, name="Maksym"):
+def press(update_id, data="boiler:off", user_id=ADMIN, chat_id=CHAT, panel_date=NOW - 60):
     return {
         "update_id": update_id,
         "callback_query": {
             "id": f"q{update_id}",
-            "from": {"id": user_id, "first_name": name},
+            "from": {"id": user_id},
             "data": data,
             "message": {"message_id": 50, "date": panel_date, "chat": {"id": int(chat_id)}},
         },
@@ -70,39 +70,27 @@ class CommandParsingTest(unittest.TestCase):
         self.assertEqual(
             bot.replies(found),
             {
-                "status": {"reply_to": 12, "user": 2, "name": None},
-                "help": {"reply_to": 13, "user": 1, "name": None},
-                "boiler": {"reply_to": 14, "user": 1, "name": None},
+                "status": {"reply_to": 12, "user": 2},
+                "help": {"reply_to": 13, "user": 1},
+                "boiler": {"reply_to": 14, "user": 1},
             },
         )
 
-    def test_menu_press_answers_without_reply_and_names_the_asker(self):
-        menu = bot.menu_taps([press(20, data="menu:status", user_id=222, name="Олена")], CHAT)
-        wanted = bot.replies([("/status", 10, 1)], menu)
-        self.assertEqual(wanted["status"], {"reply_to": None, "user": 222, "name": "Олена"})
+    def test_keyboard_buttons_map_to_commands(self):
+        self.assertEqual(bot.command_of("📊 Покажи поточний статус"), "/status")
+        self.assertEqual(bot.command_of(" 🎛 Покажи панель керування "), "/boiler")
+        self.assertIsNone(bot.command_of("покажи поточний статус"))  # only the exact button text
+        updates = [update(1, bot.KEYBOARD_STATUS), update(2, bot.KEYBOARD_BOILER, user_id=222)]
+        self.assertEqual(bot.requests(updates, CHAT), [("/status", 1, ADMIN), ("/boiler", 2, 222)])
+
+    def test_reply_keyboard_matches_handled_texts(self):
+        texts = {b["text"] for row in bot.REPLY_KEYBOARD["keyboard"] for b in row}
+        self.assertEqual(texts, set(bot.KEYBOARD_COMMANDS))
+        self.assertTrue(bot.REPLY_KEYBOARD["is_persistent"])
 
     def test_next_offset(self):
         self.assertEqual(bot.next_offset([update(7, "x"), update(9, "y")], 0), 10)
         self.assertEqual(bot.next_offset([], 42), 42)
-
-
-class MenuTest(unittest.TestCase):
-    def test_menu_taps_from_allowed_chat_only(self):
-        updates = [
-            press(1, data="menu:status", name="Олена"),
-            press(2, data="menu:boiler", user_id=222),
-            press(3, data="menu:status", chat_id="555"),  # another chat
-            press(4, data="menu:explode"),
-            press(5, data="boiler:off"),  # a panel button, not the menu
-        ]
-        found = bot.menu_taps(updates, CHAT)
-        self.assertEqual([(t["kind"], t["user"]) for t in found], [("status", ADMIN), ("boiler", 222)])
-        self.assertEqual(found[0]["name"], "Олена")
-        self.assertEqual([t["action"] for t in bot.taps(updates, CHAT)], ["off"])  # and vice versa
-
-    def test_menu_keyboard_matches_actions(self):
-        datas = {b["callback_data"] for row in bot.MENU_KEYBOARD["inline_keyboard"] for b in row}
-        self.assertEqual(datas, set(bot.MENU_ACTIONS))
 
 
 class AdminButtonsTest(unittest.TestCase):
@@ -179,16 +167,6 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("⚡️ Потужність: 1 Вт (вода нагріта)", bot.status_message(226.0, "on", 90.0, power=1.4))
         self.assertNotIn("Потужність", bot.status_message(226.0, "on", 90.0))  # unknown power
         self.assertNotIn("Потужність", bot.status_message(0.0, "off", 90.0, power=0.0))  # off: obvious
-
-    def test_asked_by(self):
-        self.assertTrue(
-            bot.status_message(226.0, "on", 90.0, asked_by="Олена").startswith(
-                "📊 Поточний стан · на запит: Олена\n"
-            )
-        )
-        self.assertTrue(bot.status_message(226.0, "on", 90.0, asked_by="  ").startswith("📊 Поточний стан\n"))
-        long = bot.status_message(226.0, "on", 90.0, asked_by="x" * 100).splitlines()[0]
-        self.assertEqual(long, "📊 Поточний стан · на запит: " + "x" * bot.NAME_MAX)
 
     def test_manual_off_line(self):
         self.assertIn("Ручний режим", bot.status_message(226.0, "off", 80.0, manual_off=True))

@@ -1,5 +1,7 @@
-"""Post the bot's menu message (📊 Статус / 🎛 Керування buttons) to the chat. Pin it
-there by hand afterwards; run again only if the menu changes.
+"""Post the bot's menu message with the persistent keyboard under the input field
+(📊 Покажи поточний статус / 🎛 Покажи панель керування). The keyboard stays until
+replaced; run again only if it changes or someone hides it. The bot needs group
+privacy mode off to receive the presses.
 
   python3 -I scripts/telegram_menu.py [.prod.vars]
 
@@ -24,7 +26,7 @@ def main(path=".prod.vars"):
     payload = {
         "chat_id": read_var(path, "TELEGRAM_CHAT_ID"),
         "text": bot.MENU_MESSAGE,
-        "reply_markup": bot.MENU_KEYBOARD,
+        "reply_markup": bot.REPLY_KEYBOARD,
     }
     req = urllib.request.Request(  # noqa: S310
         url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
@@ -35,7 +37,7 @@ def main(path=".prod.vars"):
     except Exception as exc:
         sys.exit(f"Telegram request failed: {type(exc).__name__}")  # no text: URL holds the token
     print(
-        "Menu posted: open the chat, long-press the message and choose Pin."
+        "Keyboard posted: it now shows under the input field in the chat."
         if ok
         else "Telegram rejected the menu"
     )
