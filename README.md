@@ -145,20 +145,26 @@ The power line tells whether the boiler is actually heating: above 20 W it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is
 idle).
 
-#### Pinned menu (no command text in the chat)
+#### Keyboard under the input field (no command text in the chat)
 
-In a group, commands show up as `/status@your_bot`. To avoid that, post a menu message
-with **📊 Статус** and **🎛 Керування** buttons once and pin it:
+In a group, commands show up as `/status@your_bot`. Instead, post a persistent
+keyboard once; it stays under the input field for everyone in the chat:
 
 ```bash
 python3 -I scripts/telegram_menu.py
 ```
 
-Pressing a button sends nothing into the chat; the bot's reply names who asked
-("на запит: Олена"). 📊 Статус works for everyone in the chat, 🎛 Керування opens the
-control panel for admins only. Button presses reach the bot even with Telegram's
-privacy mode on, so the bot still doesn't see the family's other messages. The menu
-buttons don't expire (they only ask for information); the panel's on/off buttons do.
+- **📊 Покажи поточний статус**: status, for everyone in the chat.
+- **🎛 Покажи панель керування**: the control panel, for admins only.
+
+A press posts the button's text as the user's own message, and the bot answers it as
+a reply. **The bot needs group privacy mode off** (@BotFather → `/setprivacy` →
+Disable, then remove and re-add the bot to the group): with privacy on, Telegram
+delivers only the first press after the keyboard is posted. With privacy off the bot
+receives every message in the chat; the Worker acts only on commands and the exact
+button texts, and stores or logs nothing else. The texts only ask for information;
+the panel's on/off buttons keep their admin check and 10-minute expiry. Run the
+script again only if the keyboard changes or someone hides it.
 
 There is no webhook: each run fetches new messages with `getUpdates`, so the Worker
 still has no public URL. Only the configured `TELEGRAM_CHAT_ID` is answered (anyone
@@ -193,7 +199,7 @@ Setup: send `/boiler` in the chat, put the ID from the reply into `.prod.vars` a
 `TELEGRAM_ADMIN_IDS`, and run `scripts/upload-secrets.sh .prod.vars`.
 
 Register the command menu once: `python3 -I scripts/telegram_commands.py`.
-The pinned menu above is the friendlier alternative to typing commands.
+The keyboard above is the friendlier alternative to typing commands.
 
 ### Alerts
 

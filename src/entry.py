@@ -271,11 +271,11 @@ class Default(WorkerEntrypoint):
             log("Telegram message sent")
         return ok
 
-    # --- commands, pinned menu and admin buttons -----------------------------
+    # --- commands, keyboard and admin buttons --------------------------------
 
     async def answer_commands(self, run):
         """Poll for new updates: apply the admin's latest button press, then answer
-        /status, /boiler, /help and pinned-menu presses from the configured chat."""
+        /status, /boiler, /help and keyboard presses from the configured chat."""
         token, chat_id = self.telegram_config()
         if not token:
             return
@@ -295,11 +295,7 @@ class Default(WorkerEntrypoint):
         admins = bot.admin_ids(self.var("TELEGRAM_ADMIN_IDS", None))
         await self.handle_taps(bot.taps(updates, chat_id), admins, run)
 
-        menu = bot.menu_taps(updates, chat_id)
-        for tap in menu:  # stop the buttons' spinners; may fail if too old, harmless
-            await self.telegram("answerCallbackQuery", {"callback_query_id": tap["id"]})
-
-        wanted = bot.replies(bot.requests(updates, chat_id), menu)
+        wanted = bot.replies(bot.requests(updates, chat_id))
         if "help" in wanted:
             await self.send_telegram(bot.HELP_MESSAGE, reply_to=wanted["help"]["reply_to"])
         boiler = wanted.get("boiler")
@@ -311,11 +307,11 @@ class Default(WorkerEntrypoint):
         if status or boiler:
             snapshot = await self.status_snapshot(run)
             if status:
-                text = bot.status_message(**snapshot, asked_by=status["name"])
+                text = bot.status_message(**snapshot)
                 await self.send_telegram(text, reply_to=status["reply_to"])
                 log("answered status")
             if boiler:
-                text = bot.panel_message(bot.status_message(**snapshot, asked_by=boiler["name"]))
+                text = bot.panel_message(bot.status_message(**snapshot))
                 await self.send_telegram(text, reply_to=boiler["reply_to"], markup=bot.PANEL_KEYBOARD)
                 log("sent control panel")
 
