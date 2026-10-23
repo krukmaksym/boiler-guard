@@ -186,8 +186,11 @@ Guards:
 
 - Only Telegram user IDs in the `TELEGRAM_ADMIN_IDS` secret (comma-separated) can
   press the buttons. Telegram authenticates user IDs, so a leaked bot token can't
-  impersonate the admin. Anyone else sending `/boiler` gets a reply with their own
-  Telegram ID, which is also how you find yours.
+  impersonate the admin. Anyone else sending `/boiler` or pressing a panel button gets
+  a reply with their own Telegram ID, which is also how you find yours.
+- Presses aren't acknowledged with `answerCallbackQuery`: Telegram accepts that only
+  within seconds, and a cron run sees the press up to a minute later. The button's
+  spinner stops by itself, and the confirmation arrives as a chat message.
 - Buttons expire 10 minutes after the panel was sent, so a press stuck in
   Telegram's queue or an old panel in the chat history can't act later.
 - Updates are confirmed before they're handled, so a failing run never replays a press.

@@ -331,21 +331,26 @@ class Default(WorkerEntrypoint):
         }
 
     async def handle_taps(self, presses, admins, run):
-        """Answer every button press; apply only the latest valid one from an admin."""
+        """Apply only the latest valid button press from an admin; tell non-admins and
+        stale-panel presses why nothing happened.
+
+        Presses are not acknowledged with answerCallbackQuery: Telegram accepts that only
+        within seconds, and a cron run sees the press up to a minute later, so the call
+        would always fail. The button's spinner stops by itself."""
         latest = None
         stale_panels = set()
+        refused = {}  # user -> panel, one reply per non-admin per run
         for tap in presses:
             verdict = bot.tap_verdict(tap, admins, time.time())
-            answer = {"callback_query_id": tap["id"]}
             if verdict == "ok":
                 latest = tap
             elif verdict == "not_admin":
-                answer["text"] = "🔒 Лише для адміністратора"
+                refused[tap["user"]] = tap["panel"]
                 log("ignored a button press from a non-admin")
             else:
                 stale_panels.add(tap["panel"])
-            # Stops the button's spinner; may fail if the press is too old, which is harmless.
-            await self.telegram("answerCallbackQuery", answer)
+        for user, panel in refused.items():
+            await self.send_telegram(bot.not_admin_message(user, bool(admins)), reply_to=panel)
         for panel in stale_panels:
             await self.send_telegram(bot.STALE_PANEL_MESSAGE, reply_to=panel)
         if latest:
