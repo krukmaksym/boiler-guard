@@ -3,8 +3,10 @@ main = "src/entry.py"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["python_workers"]
 
-# Cron-only Worker: no public URL.
-workers_dev = false
+# workers.dev URL for the optional Telegram webhook. Without TELEGRAM_WEBHOOK_SECRET
+# every request gets a 404; with it, only requests passing src/webhook.py's checks
+# are handled. Preview URLs stay off.
+workers_dev = true
 preview_urls = false
 
 [triggers]
@@ -26,4 +28,34 @@ MAX_DATA_AGE_SECONDS = "900"
 SHELLY_CHANNEL = "0"
 
 [observability]
+enabled = true
+
+# --- boiler-guard-test: for verifying changes with the test bot and test group ---
+# Never deployed by CI. Exists only while verifying: scripts/test-env.sh up deploys
+# it with EXPIRES_AT (it does nothing at all after that time), and
+# scripts/test-env.sh down deletes the Worker and its webhook.
+# vars and kv_namespaces are not inherited by environments, so they are repeated.
+[env.test]
+name = "boiler-guard-test"
+workers_dev = true
+preview_urls = false
+
+[env.test.triggers]
+crons = ["* * * * *"]
+
+[[env.test.kv_namespaces]]
+binding = "STATE"
+id = "9f2e8f04da484c3abd920fa5945e718b"
+
+[env.test.vars]
+ENVIRONMENT = "test"  # makes EXPIRES_AT mandatory: without it the Worker never runs
+NOTIFY_PREFIX = "🧪 ТЕСТ: "
+DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
+GRID_VOLTAGE_KEY = "GridVoltageL1L2"
+ON_VOLTAGE = "210"
+OFF_VOLTAGE = "205"
+MAX_DATA_AGE_SECONDS = "900"
+SHELLY_CHANNEL = "0"
+
+[env.test.observability]
 enabled = true

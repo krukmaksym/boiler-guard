@@ -16,10 +16,18 @@ class TelegramUrlTest(unittest.TestCase):
 
     def test_method_allowlist(self):
         self.assertTrue(notify.telegram_api_url(TOKEN, "getUpdates").endswith("/getUpdates"))
-        # answerCallbackQuery included: a cron run sees presses too late to answer them.
-        for method in ("deleteMessage", "setWebhook", "answerCallbackQuery", "sendMessage/../x"):
+        self.assertTrue(notify.telegram_api_url(TOKEN, "answerCallbackQuery"))  # webhook mode
+        # The Worker can never (re)configure its own webhook; only the setup script can.
+        for method in ("deleteMessage", "setWebhook", "deleteWebhook", "sendMessage/../x"):
             with self.assertRaises(notify.NotifyError):
                 notify.telegram_api_url(TOKEN, method)
+
+    def test_setup_allowlist_is_separate(self):
+        for method in ("setWebhook", "deleteWebhook", "getWebhookInfo"):
+            self.assertTrue(notify.telegram_api_url(TOKEN, method, allowed=notify.SETUP_METHODS))
+        for method in ("sendMessage", "getUpdates"):
+            with self.assertRaises(notify.NotifyError):
+                notify.telegram_api_url(TOKEN, method, allowed=notify.SETUP_METHODS)
 
     def test_rejects_odd_tokens(self):
         for bad in (None, "", "abc", "123:short", f"{TOKEN}/../../x", "evil.com/bot1:" + "A" * 35):

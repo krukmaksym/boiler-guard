@@ -4,14 +4,23 @@ Runs on a cron trigger. Credentials come from Worker Secrets; the STATE KV
 namespace only holds the auto-refreshed Deye token, the last desired plug state,
 the admin's manual-off flag, notification dedup state and the Telegram update
 offset. Optional Telegram notifications, /status replies and /boiler buttons run
-after the plug logic and can never block or break it. Updates are fetched by
-polling (getUpdates) each run: no webhook, so the Worker still has no public URL.
+after the plug logic and can never block or break it.
+
+Telegram updates arrive one of two ways:
+- polling (default): each cron run calls getUpdates, so replies take up to a minute
+  and the Worker needs no public URL;
+- webhook (when TELEGRAM_WEBHOOK_SECRET is set): Telegram POSTs each update to
+  fetch(), which answers within seconds. Requests must pass every check in
+  webhook.py first; anything else gets a 404. The cron then stops polling.
+
+A deployment with EXPIRES_AT (the boiler-guard-test environment) does nothing at
+all once that time has passed: no cron work, 404 to every request.
 """
 
 import asyncio
 import json
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from js import AbortSignal, Object
 from pyodide.ffi import to_js
@@ -20,6 +29,7 @@ from workers import Response, WorkerEntrypoint, fetch
 import bot
 import logic
 import notify
+import webhook
 
 REQUIRED_SECRETS = (
     "DEYE_APP_ID",
@@ -37,8 +47,16 @@ TOKEN_BACKOFF_KEY = "deye:token_backoff"  # noqa: S105
 TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on bad credentials
 DESIRED_KEY = "state:desired"
 MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
+# Set for a few minutes after the admin presses ⛔: the cron then checks the plug really
+# stayed off (a switch-on racing the press, or reading a not-yet-visible mode from KV,
+# is undone). Outside this window the cron never touches Shelly unless grid changes.
+VERIFY_OFF_KEY = "state:verify_off"
+VERIFY_OFF_SECONDS = 180
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
+LAST_UPDATE_KEY = "telegram:last_update"  # webhook: highest update_id handled (replay guard)
+COOLDOWN_KEY = "telegram:cooldown:{kind}"  # webhook: when status / the panel was last sent
+STATUS_COOLDOWN_SECONDS = 10  # each of them at most this often (on-demand Deye/Shelly reads)
 REQUEST_TIMEOUT_MS = 15000
 NOTIFY_TIMEOUT_MS = 10000
 
@@ -74,10 +92,55 @@ def log(message):
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        # No HTTP surface: the Worker is cron-only.
-        return Response("Not found", status=404)
+        """Telegram webhook, only when TELEGRAM_WEBHOOK_SECRET is set. Every other
+        request (wrong path, method, header, size or source) gets the same 404."""
+        secret = self.webhook_secret()
+        if secret is None or self.is_expired():
+            return Response("Not found", status=404)
+        headers = request.headers
+        if not webhook.authorized(
+            method=request.method,
+            path=urlparse(str(request.url)).path,
+            header_secret=headers.get(webhook.SECRET_HEADER),
+            content_type=headers.get("Content-Type"),
+            content_length=headers.get("Content-Length"),
+            client_ip=headers.get("CF-Connecting-IP"),
+            secret=secret,
+            check_ip=self.var("TELEGRAM_IP_CHECK", "on") != "off",
+        ):
+            return Response("Not found", status=404)
+        body = await request.text()
+        if len(body.encode()) > webhook.MAX_BODY_BYTES:
+            return Response("Not found", status=404)
+        try:
+            update = json.loads(body)
+        except ValueError:
+            update = None
+        if isinstance(update, dict):
+            try:
+                await self.handle_webhook_update(update)
+            except Exception as exc:
+                log(f"webhook handling failed: {type(exc).__name__}")
+        # Always 200 once authenticated: Telegram retries anything else, which could
+        # repeat an action. Failures are logged and reported in the chat instead.
+        return Response("ok", status=200)
+
+    async def handle_webhook_update(self, update):
+        update_id = update.get("update_id")
+        if isinstance(update_id, int) and not isinstance(update_id, bool):
+            last = await self.kv_get(LAST_UPDATE_KEY)
+            if last and last.isdigit() and update_id <= int(last):
+                log("webhook: duplicate update ignored")
+                return
+            # Saved before handling, so a retry after a crash can't repeat an action.
+            # Best effort: KV is eventually consistent, max_connections=1 does the rest.
+            await self.kv_put(LAST_UPDATE_KEY, str(update_id))
+        await self.handle_updates([update], {}, live=True)
 
     async def scheduled(self, controller, env=None, ctx=None):
+        if self.is_expired():
+            log("deployment expired (EXPIRES_AT); doing nothing")
+            return
         outbox = []
         run = {}  # what this run learned, for /status replies
         state = await self.load_notify_state()
@@ -95,16 +158,30 @@ class Default(WorkerEntrypoint):
                 await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
                 log(f"notification flush failed: {type(exc).__name__}")
-            try:
-                await self.answer_commands(run)
-            except Exception as exc:
-                log(f"command handling failed: {type(exc).__name__}")
+            if self.webhook_secret() is None:  # webhook mode: Telegram pushes updates to fetch()
+                try:
+                    await self.answer_commands(run)
+                except Exception as exc:
+                    log(f"command handling failed: {type(exc).__name__}")
 
     # --- config -----------------------------------------------------------
 
     def var(self, name, default):
         value = getattr(self.env, name, None)
         return value if isinstance(value, str) and value else default
+
+    def webhook_secret(self):
+        """TELEGRAM_WEBHOOK_SECRET when set and strong enough, else None (polling mode)."""
+        secret = self.var("TELEGRAM_WEBHOOK_SECRET", None)
+        if secret is not None and not webhook.valid_secret(secret):
+            log("TELEGRAM_WEBHOOK_SECRET is too weak (need 32+ of A-Z a-z 0-9 _ -); webhook disabled")
+            return None
+        return secret
+
+    def is_expired(self):
+        """The test environment must carry EXPIRES_AT; production normally has none."""
+        required = self.var("ENVIRONMENT", "production") == "test"
+        return webhook.expired(self.var("EXPIRES_AT", None), time.time(), required=required)
 
     def secrets(self):
         values = {name: self.var(name, None) for name in REQUIRED_SECRETS}
@@ -274,9 +351,8 @@ class Default(WorkerEntrypoint):
     # --- commands, keyboard and admin buttons --------------------------------
 
     async def answer_commands(self, run):
-        """Poll for new updates: apply the admin's latest button press, then answer
-        /status, /boiler, /help and keyboard presses from the configured chat."""
-        token, chat_id = self.telegram_config()
+        """Polling mode: fetch new updates with getUpdates and handle them."""
+        token, _ = self.telegram_config()
         if not token:
             return
         offset = int(await self.kv_get(OFFSET_KEY) or 0)
@@ -291,9 +367,17 @@ class Default(WorkerEntrypoint):
         new_offset = bot.next_offset(updates, offset)
         if new_offset != offset:  # KV write only when updates arrived
             await self.kv_put(OFFSET_KEY, str(new_offset))
+        await self.handle_updates(updates, run, live=False)
 
+    async def handle_updates(self, updates, run, live):
+        """Apply the admin's latest button press, then answer /status, /boiler, /help
+        and keyboard presses from the configured chat. live: webhook mode (answers
+        right away, reads Deye on demand, acknowledges button presses)."""
+        token, chat_id = self.telegram_config()
+        if not token:
+            return
         admins = bot.admin_ids(self.var("TELEGRAM_ADMIN_IDS", None))
-        await self.handle_taps(bot.taps(updates, chat_id), admins, run)
+        await self.handle_taps(bot.taps(updates, chat_id), admins, run, acknowledge=live)
 
         wanted = bot.replies(bot.requests(updates, chat_id))
         if "help" in wanted:
@@ -304,20 +388,55 @@ class Default(WorkerEntrypoint):
             await self.send_telegram(text, reply_to=boiler["reply_to"])
             boiler = None
         status = wanted.get("status")
-        if status or boiler:
-            snapshot = await self.status_snapshot(run)
-            if status:
-                text = bot.status_message(**snapshot)
-                await self.send_telegram(text, reply_to=status["reply_to"])
-                log("answered status")
-            if boiler:
-                text = bot.panel_message(bot.status_message(**snapshot))
-                await self.send_telegram(text, reply_to=boiler["reply_to"], markup=bot.PANEL_KEYBOARD)
-                log("sent control panel")
+        if live:
+            # On-demand reads hit Deye and Shelly, so a stuck button or a spammer in
+            # the chat can't hammer them. Status and the panel cool down separately,
+            # so opening the panel right after a status still works.
+            if status and not await self.cooled_down("status"):
+                status = None
+            if boiler and not await self.cooled_down("boiler"):
+                boiler = None
+        if not (status or boiler):
+            return
+        snapshot = await self.status_snapshot(run)
+        if status:
+            text = bot.status_message(**snapshot)
+            await self.send_telegram(text, reply_to=status["reply_to"])
+            log("answered status")
+        if boiler:
+            text = bot.panel_message(bot.status_message(**snapshot))
+            await self.send_telegram(text, reply_to=boiler["reply_to"], markup=bot.PANEL_KEYBOARD)
+            log("sent control panel")
+
+    async def cooled_down(self, kind):
+        """True (and starts a new cooldown) when `kind` may be answered on demand now."""
+        key = COOLDOWN_KEY.format(kind=kind)
+        now = time.time()
+        if not webhook.cooled_down(await self.kv_get(key), now, STATUS_COOLDOWN_SECONDS):
+            log(f"{kind} request ignored: cooldown")
+            return False
+        await self.kv_put(key, str(now), ttl=60)  # 60 s is KV's minimum TTL
+        return True
+
+    async def ensure_reading(self, run):
+        """Read Deye if this invocation hasn't yet (webhook requests, or a cron run
+        that failed before reading). Read-only, like every Deye call."""
+        if "voltage" in run:
+            return
+        voltage, soc, _ = await self.deye_reading(self.secrets())
+        run.update(voltage=voltage, soc=soc)
+        if voltage is not None:
+            run["desired"] = logic.desired_state(
+                voltage,
+                await self.kv_get(DESIRED_KEY),
+                on_at=float(self.var("ON_VOLTAGE", "210")),
+                off_below=float(self.var("OFF_VOLTAGE", "205")),
+            )
 
     async def status_snapshot(self, run):
         """Everything a status reply shows. Shelly is polled fresh (state and live
         power) since this only runs when someone asks."""
+        await self.ensure_reading(run)
         if "plug" in run:
             await asyncio.sleep(1.1)  # Shelly was already called this run (~1 request/second)
         plug, power = await self.poll_plug()
@@ -330,24 +449,31 @@ class Default(WorkerEntrypoint):
             "power": power,
         }
 
-    async def handle_taps(self, presses, admins, run):
+    async def handle_taps(self, presses, admins, run, acknowledge=False):
         """Apply only the latest valid button press from an admin; tell non-admins and
         stale-panel presses why nothing happened.
 
-        Presses are not acknowledged with answerCallbackQuery: Telegram accepts that only
-        within seconds, and a cron run sees the press up to a minute later, so the call
-        would always fail. The button's spinner stops by itself."""
+        acknowledge (webhook mode): answer each press with answerCallbackQuery, which
+        stops the button's spinner and shows refusals as a toast. Polling sees presses
+        up to a minute later, past Telegram's few-second window, so there refusals go
+        to the chat instead and the spinner stops by itself."""
         latest = None
         stale_panels = set()
         refused = {}  # user -> panel, one reply per non-admin per run
         for tap in presses:
             verdict = bot.tap_verdict(tap, admins, time.time())
+            if acknowledge:
+                answer = {"callback_query_id": tap["id"]}
+                if verdict != "ok":
+                    answer["text"] = bot.NOT_ADMIN_TOAST if verdict == "not_admin" else bot.STALE_TOAST
+                await self.telegram("answerCallbackQuery", answer)
             if verdict == "ok":
                 latest = tap
             elif verdict == "not_admin":
-                refused[tap["user"]] = tap["panel"]
                 log("ignored a button press from a non-admin")
-            else:
+                if not acknowledge:
+                    refused[tap["user"]] = tap["panel"]
+            elif not acknowledge:
                 stale_panels.add(tap["panel"])
         for user, panel in refused.items():
             await self.send_telegram(bot.not_admin_message(user, bool(admins)), reply_to=panel)
@@ -361,6 +487,8 @@ class Default(WorkerEntrypoint):
     async def apply_control(self, action, run):
         """Carry out an admin's button press and return the reply. The mode is saved
         only after the plug is in the right state, so a failure changes nothing."""
+        if action == logic.ON:
+            await self.ensure_reading(run)  # "on" needs to know whether grid is present
         target = logic.control_target(action, run.get("desired"))
         switched = False
         if target is not None:
@@ -383,6 +511,7 @@ class Default(WorkerEntrypoint):
                 return bot.CONTROL_FAILED_MESSAGE
         if action == logic.OFF:
             await self.kv_put(MODE_KEY, logic.OFF)
+            await self.kv_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
         else:
             await self.env.STATE.delete(MODE_KEY)
         return bot.control_message(action, target, switched)
@@ -399,6 +528,22 @@ class Default(WorkerEntrypoint):
 
     # --- main loop ----------------------------------------------------------
 
+    async def enforce_hold(self, secrets, channel, run):
+        """Within VERIFY_OFF_SECONDS of a manual ⛔, make sure the plug really is off.
+        Costs one KV read on ordinary runs; Shelly is polled only inside the window."""
+        if not await self.kv_get(VERIFY_OFF_KEY) or await self.kv_get(MODE_KEY) != logic.OFF:
+            return
+        try:
+            actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
+            run["plug"] = actual
+            if actual == logic.ON:
+                await asyncio.sleep(1.1)  # Shelly cloud allows ~1 request/second
+                await self.shelly("/device/relay/control", secrets, channel=channel, turn=logic.OFF)
+                run["plug"] = logic.OFF
+                log("re-applied the admin's manual off: the plug was on while held off")
+        except Exception as exc:  # retried on the next run while the window lasts
+            log(f"manual-off check failed: {type(exc).__name__}")
+
     async def check(self, state, outbox, run):
         secrets = self.secrets()
         channel = int(self.var("SHELLY_CHANNEL", "0"))
@@ -408,6 +553,7 @@ class Default(WorkerEntrypoint):
         outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
         if voltage is None:
             log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
+            await self.enforce_hold(secrets, channel, run)  # switching off is always safe
             return
 
         previous = await self.kv_get(DESIRED_KEY)
@@ -417,6 +563,7 @@ class Default(WorkerEntrypoint):
         run["desired"] = desired
         if desired is None or desired == previous:
             log(f"grid {voltage:.1f}V, desired={desired}; no change")
+            await self.enforce_hold(secrets, channel, run)
             return
 
         # Desired state changed. The admin's manual off wins over grid returning.
@@ -434,6 +581,11 @@ class Default(WorkerEntrypoint):
 
         if actual != target:
             await asyncio.sleep(1.1)  # Shelly cloud allows ~1 request/second
+            if target == logic.ON and await self.kv_get(MODE_KEY) == logic.OFF:
+                # Last check before switching on: a ⛔ pressed while this run was deciding wins.
+                held, target = True, logic.OFF
+                log("admin held the boiler off while this run was deciding")
+        if actual != target:
             await self.shelly("/device/relay/control", secrets, channel=channel, turn=target)
             run["plug"] = target
             log(f"grid {voltage:.1f}V: switched plug {actual} -> {target}")

@@ -4,6 +4,9 @@
 !.prod.vars.example
 .dev.vars
 .dev.vars.*
+.test.vars
+.test.vars.*
+!.test.vars.example
 .env
 .env.*
 
