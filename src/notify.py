@@ -19,14 +19,17 @@ class NotifyError(Exception):
     """Bad Telegram configuration. Never carries the token."""
 
 
-# The only Telegram Bot API methods this project ever calls.
-TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands"})
+# The only Telegram Bot API methods the Worker ever calls. answerCallbackQuery only
+# works in webhook mode (polling sees presses too late to answer them).
+TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands", "answerCallbackQuery"})
+# Used only by scripts/telegram_webhook.py on your machine, never by the Worker.
+SETUP_METHODS = frozenset({"setWebhook", "deleteWebhook", "getWebhookInfo"})
 
 
-def telegram_api_url(token, method):
+def telegram_api_url(token, method, allowed=TELEGRAM_METHODS):
     """URL for an allowlisted Bot API method. The token must sit in the path
     (Telegram's API design), so these URLs must never be logged."""
-    if method not in TELEGRAM_METHODS:
+    if method not in allowed:
         raise NotifyError(f"Telegram method {method!r} is not allowed")
     if not isinstance(token, str) or not _TOKEN_RE.match(token):
         raise NotifyError("TELEGRAM_BOT_TOKEN has an unexpected format")

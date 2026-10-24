@@ -101,7 +101,7 @@ jobs:
       - name: npm audit
         run: npm audit --audit-level=high
       - name: Bundle without deploying
-        run: pywrangler deploy --dry-run --outdir dist
+        run: pywrangler deploy --env="" --dry-run --outdir dist
 
   deploy:
     name: Deploy to Cloudflare
@@ -135,7 +135,7 @@ jobs:
       # Code and [vars] only. Worker Secrets stay in Cloudflare and are untouched
       # by deploys, so GitHub never holds Deye or Shelly credentials.
       - name: Deploy
-        run: pywrangler deploy
+        run: pywrangler deploy --env=""  # production (top-level), never boiler-guard-test
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

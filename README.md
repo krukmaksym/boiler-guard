@@ -41,7 +41,8 @@ expires or is rejected.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
   KV (`STATE`) holds only the derived Deye token, a login back-off flag, the
   `on`/`off` state, the admin's manual-off flag and Telegram bookkeeping.
-- No public URL (`workers_dev = false`, `preview_urls = false`); `fetch` returns 404.
+- The only HTTP surface is the optional Telegram webhook (see below). Without
+  `TELEGRAM_WEBHOOK_SECRET` every request gets a 404; preview URLs are off.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
   Ideally use a Shelly account that holds only this plug: the key can't be scoped.
 - Outbound requests time out after 15 s and never follow redirects.
@@ -194,6 +195,10 @@ Guards:
 - Buttons expire 10 minutes after the panel was sent, so a press stuck in
   Telegram's queue or an old panel in the chat history can't act later.
 - Updates are confirmed before they're handled, so a failing run never replays a press.
+- A manual off can't be lost to a race with the cron: right before switching on, the
+  cron re-reads the mode, and for 3 minutes after ⛔ it checks the plug really stayed
+  off (and switches it off again if not). Outside that window the cron still touches
+  Shelly only when grid changes.
 - The manual mode is saved only after the plug is confirmed in the right state; if
   Shelly doesn't answer, nothing changes and the chat is told.
 - Deye stays read-only: the buttons only drive the Shelly plug.
@@ -204,6 +209,64 @@ Setup: send `/boiler` in the chat, put the ID from the reply into `.prod.vars` a
 Register the command menu once: `python3 -I scripts/telegram_commands.py`.
 The keyboard above is the friendlier alternative to typing commands.
 
+#### Instant replies: Telegram webhook (optional)
+
+By default the bot polls Telegram on each cron run, so replies take up to a minute.
+In webhook mode Telegram POSTs every message and button press to the Worker, which
+answers within a few seconds: status is read from Deye and Shelly on demand, and
+button presses are acknowledged (the spinner stops; refusals show as a toast).
+
+Every request must pass all of these before the Worker reads its body, or it gets
+the same plain 404 (`src/webhook.py`):
+
+- the `X-Telegram-Bot-Api-Secret-Token` header equals `TELEGRAM_WEBHOOK_SECRET`
+  (32+ random characters, compared in constant time);
+- the path, `/telegram/<hash of the secret>`, which nobody can guess without it;
+- `POST` with a JSON body of at most 64 KB;
+- the client IP is in Telegram's webhook ranges (`149.154.160.0/20`, `91.108.4.0/22`).
+
+After that, the same chat and admin checks as in polling mode apply. Status and
+the panel are each answered at most once per 10 s (they read Deye and Shelly), Telegram delivers one update at a time
+(`max_connections=1`), an update is never handled twice (`update_id` is
+remembered), and the Worker always answers 200 so Telegram doesn't retry an action.
+The Worker can't change its own webhook: `setWebhook` is only in the setup script's
+allowlist.
+
+Switch on (order matters):
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # put it in .prod.vars as TELEGRAM_WEBHOOK_SECRET
+scripts/upload-secrets.sh .prod.vars                            # the Worker stops polling
+python3 -I scripts/telegram_webhook.py set https://boiler-guard.<subdomain>.workers.dev
+python3 -I scripts/telegram_webhook.py info                     # host, pending updates, last error
+```
+
+Switch back: `python3 -I scripts/telegram_webhook.py delete`, then remove the secret
+from the Worker (`npx --no-install wrangler secret delete TELEGRAM_WEBHOOK_SECRET`)
+and from `.prod.vars`.
+
+### Test environment: boiler-guard-test
+
+A second Worker, wired to a test bot and a test group, for verifying a change in
+the real runtime before it reaches the family chat. It exists only while you test:
+
+```bash
+cp .test.vars.example .test.vars      # test bot, test group, own webhook secret; same Deye/Shelly
+scripts/test-env.sh up 2              # deploy this checkout for 2 h, point the test bot at it
+scripts/test-env.sh status
+scripts/test-env.sh down              # remove the webhook and delete the Worker
+```
+
+- `up` stamps `EXPIRES_AT`; after it the Worker does nothing at all (no cron work,
+  404 to every request), even if `down` is forgotten. The test environment refuses
+  to run without an expiry.
+- `down` deletes the Worker, so nothing is left to run or answer. Its KV namespace
+  stays for next time.
+- `test-env.sh` refuses to run if `.test.vars` shares the bot token, chat or webhook
+  secret with `.prod.vars`, so it can never take over the production bot.
+- It reads the real inverter and switches the **real plug**, like production.
+- CI never deploys it; it's deployed from your checkout.
+
 ### Alerts
 
 Cloudflare custom alerts (beta) can watch the Workers events dataset: alert when
@@ -212,10 +275,15 @@ CPU-limit kills. A log-based alert can't detect the cron not running at all.
 
 ## Run locally
 
-Hits the real Deye and Shelly APIs; KV is simulated locally.
+Hits the real Deye and Shelly APIs; KV is simulated locally. `.dev.vars` is
+generated from `.test.vars` (test bot and test group), never from `.prod.vars`, so a
+local run can't post to the family chat or race production for Telegram updates.
+It leaves out `TELEGRAM_WEBHOOK_SECRET`: Telegram can't reach a local Worker, so it
+polls. Local runs are where the fake Deye works (outages, low voltage, data gaps);
+use `boiler-guard-test` for anything that needs the webhook.
 
 ```bash
-python3 -I scripts/parse_env.py .prod.vars dev-vars .dev.vars
+python3 -I scripts/parse_env.py .test.vars dev-vars .dev.vars
 PATH="$PWD/.venv/bin:$PATH" .venv/bin/pywrangler dev --test-scheduled
 ```
 

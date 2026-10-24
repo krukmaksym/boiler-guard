@@ -4,6 +4,10 @@ deploy- or dev-friendly form.
 Never prints values. Usage:
   parse_env.py <vars-file> bulk-json <out-dir>   -> <out-dir>/secrets.json (+ <out-dir>/token)
   parse_env.py <vars-file> dev-vars  <out-file>  -> .dev.vars for local `wrangler dev`
+
+For local runs, generate .dev.vars from .test.vars (test bot and group), never from
+.prod.vars. dev-vars leaves out TELEGRAM_WEBHOOK_SECRET: Telegram can't reach a
+local Worker, so it must keep polling.
 """
 
 import json
@@ -23,7 +27,7 @@ SECRETS = (
     "SHELLY_AUTH_KEY",
 )
 # Uploaded when present; the Worker runs without them (no notifications).
-OPTIONAL_SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ADMIN_IDS")
+OPTIONAL_SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ADMIN_IDS", "TELEGRAM_WEBHOOK_SECRET")
 LINE_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$")
 
 
@@ -57,6 +61,7 @@ def main(env_file, mode, target):
         if values.get("BEARER_TOKEN"):
             write_private(Path(target) / "token", values["BEARER_TOKEN"])
     elif mode == "dev-vars":
+        secrets.pop("TELEGRAM_WEBHOOK_SECRET", None)  # local runs poll; Telegram can't reach them
         write_private(target, "".join(f"{k}={json.dumps(v)}\n" for k, v in secrets.items()))
     else:
         sys.exit(f"Unknown mode: {mode}")

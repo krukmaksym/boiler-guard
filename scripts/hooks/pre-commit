@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Block commits that would publish secrets.
 
-1. Refuses secret files (.prod.vars, .dev.vars, .env*, .wrangler/) outright.
-2. Refuses staged content containing any real value from .prod.vars / .dev.vars.
+1. Refuses secret files (.prod.vars, .dev.vars, .test.vars, .env*, .wrangler/) outright.
+2. Refuses staged content containing any real value from .prod.vars / .dev.vars / .test.vars.
 3. Refuses staged content that looks like a JWT or a Shelly/Deye credential assignment.
 
 Enabled with: git config core.hooksPath scripts/hooks
@@ -18,12 +18,12 @@ from pathlib import Path
 ROOT = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
 sys.path.insert(0, str(ROOT / "scripts"))
 
-BLOCKED = re.compile(r"(^|/)(\.prod\.vars|\.dev\.vars|\.env)(\..*)?$|(^|/)\.wrangler/")
-ALLOWED = {".prod.vars.example"}
+BLOCKED = re.compile(r"(^|/)(\.prod\.vars|\.dev\.vars|\.test\.vars|\.env)(\..*)?$|(^|/)\.wrangler/")
+ALLOWED = {".prod.vars.example", ".test.vars.example"}
 PATTERNS = {
     "JWT": re.compile(rb"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     "credential assignment": re.compile(
-        rb"(APP_SECRET|SHELLY_AUTH_KEY|SHA_256_PASSWORD|BEARER_TOKEN)\s*=\s*[\"']?[A-Za-z0-9+/=_-]{16,}"
+        rb"(APP_SECRET|SHELLY_AUTH_KEY|SHA_256_PASSWORD|BEARER_TOKEN|TELEGRAM_WEBHOOK_SECRET)\s*=\s*[\"']?[A-Za-z0-9+/=_-]{16,}"
     ),
     "Telegram bot token": re.compile(rb"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"),
 }
@@ -31,7 +31,7 @@ PATTERNS = {
 
 def real_values():
     values = {}
-    for name in (".prod.vars", ".dev.vars"):
+    for name in (".prod.vars", ".dev.vars", ".test.vars"):
         path = ROOT / name
         if not path.exists():
             continue

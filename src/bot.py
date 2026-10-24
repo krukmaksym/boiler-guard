@@ -70,6 +70,9 @@ AUTO_WAIT_MESSAGE = (
 CONTROL_FAILED_MESSAGE = (
     "❌ Не вдалося змінити стан бойлера: розетка Shelly не відповідає. Спробуйте ще раз пізніше."
 )
+# Toasts for answerCallbackQuery (webhook mode only; Telegram allows up to 200 chars).
+NOT_ADMIN_TOAST = "🔒 Керувати бойлером може лише адміністратор"
+STALE_TOAST = "⌛️ Ця панель застаріла, відкрийте нову"
 STALE_PANEL_MESSAGE = (
     f"⌛️ Ця панель застаріла. Натисніть «{KEYBOARD_BOILER}» під полем вводу, щоб отримати нову."
 )

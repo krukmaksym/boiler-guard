@@ -1,0 +1,18 @@
+# Copy to .test.vars for scripts/test-env.sh (boiler-guard-test). Never commit .test.vars.
+# Same Deye and Shelly credentials as .prod.vars: the test Worker reads the real
+# inverter and switches the real plug while it's up.
+DEYE_APP_ID = "<same as .prod.vars>"
+APP_SECRET = "<same as .prod.vars>"
+USER_EMAIL = "<same as .prod.vars>"
+SHA_256_PASSWORD = "<same as .prod.vars>"
+INVERTER_SN = "<same as .prod.vars>"
+SHELLY_HOST = "<same as .prod.vars>"
+DEVICE_ID = "<same as .prod.vars>"
+SHELLY_AUTH_KEY = "<same as .prod.vars>"
+
+# Must differ from .prod.vars (test-env.sh refuses otherwise).
+TELEGRAM_BOT_TOKEN = "<the test bot's token>"
+TELEGRAM_CHAT_ID = "<the test group's chat id>"
+TELEGRAM_ADMIN_IDS = "<your telegram user id>"
+# 32-256 characters of A-Z a-z 0-9 _ -, e.g.: python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+TELEGRAM_WEBHOOK_SECRET = "<random secret for the test webhook>"
