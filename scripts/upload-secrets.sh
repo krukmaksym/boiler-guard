@@ -15,11 +15,11 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 python3 -I "$(dirname "$0")/parse_env.py" "$ENV_FILE" bulk-json "$TMP_DIR"
 
 # --no-install: only ever use the wrangler pinned in package-lock.json (run `npm ci` first).
-npx --no-install wrangler secret bulk "$TMP_DIR/secrets.json"
+npx --no-install wrangler secret bulk "$TMP_DIR/secrets.json" --env=""  # production (top-level)
 
 if [[ -f "$TMP_DIR/token" ]]; then
   # Optional: saves one token request on first run. The Worker refreshes it itself.
-  npx --no-install wrangler kv key put --binding=STATE --remote "deye:token" \
+  npx --no-install wrangler kv key put --env="" --binding=STATE --remote "deye:token" \
     --path "$TMP_DIR/token" --ttl 86400
 fi
 echo "Done."

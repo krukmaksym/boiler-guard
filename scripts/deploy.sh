@@ -19,4 +19,4 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 python3 -I scripts/parse_env.py "$ENV_FILE" bulk-json "$TMP_DIR"
 
 # pywrangler syncs Python deps, then runs the wrangler pinned in package-lock.json.
-PATH="$PWD/.venv/bin:$PATH" .venv/bin/pywrangler deploy --secrets-file "$TMP_DIR/secrets.json"
+PATH="$PWD/.venv/bin:$PATH" .venv/bin/pywrangler deploy --env="" --secrets-file "$TMP_DIR/secrets.json"
