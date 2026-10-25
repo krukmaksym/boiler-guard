@@ -257,7 +257,7 @@ class Default(WorkerEntrypoint):
             log(f"Deye unavailable: {type(exc).__name__}: {exc}")
             return None, None, ("unreachable", type(exc).__name__)
         now = time.time()
-        max_age = int(self.var("MAX_DATA_AGE_SECONDS", "900"))
+        max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
         sn = secrets["INVERTER_SN"]
         key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
         voltage = logic.grid_voltage(data, sn, now=now, key=key, max_age_seconds=max_age)

@@ -36,12 +36,12 @@ class TelegramUrlTest(unittest.TestCase):
 
 
 class BlindTest(unittest.TestCase):
-    def test_notifies_once_after_15_minutes_then_recovers(self):
+    def test_notifies_once_after_5_minutes_then_recovers(self):
         state = {}
         self.assertIsNone(notify.on_voltage(state, None, T0))
-        self.assertIsNone(notify.on_voltage(state, None, T0 + 14 * 60))
-        msg = notify.on_voltage(state, None, T0 + 15 * 60, "stale")
-        self.assertIn("15 хвилин", msg)
+        self.assertIsNone(notify.on_voltage(state, None, T0 + 4 * 60))
+        msg = notify.on_voltage(state, None, T0 + 5 * 60, "stale")
+        self.assertIn("5 хвилин", msg)
         self.assertIn("не оновлюються", msg)
         self.assertIsNone(notify.on_voltage(state, None, T0 + 30 * 60))  # no repeat
         recovered = notify.on_voltage(state, 226.4, T0 + 32 * 60)

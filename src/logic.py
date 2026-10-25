@@ -78,7 +78,7 @@ def is_deye_auth_error(status, data):
     return False
 
 
-def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
+def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     """Grid voltage from a Deye /device/latest response, or None if Deye can't be trusted.
 
     Matches `key` exactly: LoadVoltage*/ACVoltage* are the inverter's own output
@@ -88,12 +88,12 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
     return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
 
 
-def battery_soc(data, sn, now, key="SOC", max_age_seconds=900):
+def battery_soc(data, sn, now, key="SOC", max_age_seconds=180):
     """Battery state of charge (%) from the same response, or None."""
     return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
 
 
-def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=900):
+def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     """Why grid_voltage() gives None, as (code, log detail); None when it doesn't.
 
     Codes: "api" (Deye said no), "missing" (inverter not in the response),
