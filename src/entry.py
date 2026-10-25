@@ -458,10 +458,11 @@ class Default(WorkerEntrypoint):
         up to a minute later, past Telegram's few-second window, so there refusals go
         to the chat instead and the spinner stops by itself."""
         latest = None
+        ttl = bot.PANEL_TTL_LIVE_SECONDS if acknowledge else bot.PANEL_TTL_SECONDS
         stale_panels = set()
         refused = {}  # user -> panel, one reply per non-admin per run
         for tap in presses:
-            verdict = bot.tap_verdict(tap, admins, time.time())
+            verdict = bot.tap_verdict(tap, admins, time.time(), ttl)
             if acknowledge:
                 answer = {"callback_query_id": tap["id"]}
                 if verdict != "ok":

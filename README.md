@@ -192,8 +192,9 @@ Guards:
 - Presses aren't acknowledged with `answerCallbackQuery`: Telegram accepts that only
   within seconds, and a cron run sees the press up to a minute later. The button's
   spinner stops by itself, and the confirmation arrives as a chat message.
-- Buttons expire 10 minutes after the panel was sent, so a press stuck in
-  Telegram's queue or an old panel in the chat history can't act later.
+- Buttons expire 3 minutes after the panel was sent (1 minute in webhook mode), so
+  a press stuck in Telegram's queue or an old panel in the chat history can't act
+  later, and nobody acts on an out-of-date status.
 - Updates are confirmed before they're handled, so a failing run never replays a press.
 - A manual off can't be lost to a race with the cron: right before switching on, the
   cron re-reads the mode, and for 3 minutes after ⛔ it checks the plug really stayed
