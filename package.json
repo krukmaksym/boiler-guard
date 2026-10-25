@@ -3,7 +3,7 @@
   "private": true,
   "description": "Pins wrangler so npx/pywrangler never fetch an unreviewed version. undici is overridden past GHSA-4qv8-2p9j-2685 / GHSA-f72v-6w45-q472 / GHSA-xjj6-f33q-929c until wrangler's miniflare picks up a fixed version.",
   "devDependencies": {
-    "wrangler": "4.151.1"
+    "wrangler": "4.152.0"
   },
   "overrides": {
     "undici": "7.30.1"
