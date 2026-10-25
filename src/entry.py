@@ -257,7 +257,7 @@ class Default(WorkerEntrypoint):
             log(f"Deye unavailable: {type(exc).__name__}: {exc}")
             return None, None, ("unreachable", type(exc).__name__)
         now = time.time()
-        max_age = int(self.var("MAX_DATA_AGE_SECONDS", "900"))
+        max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
         sn = secrets["INVERTER_SN"]
         key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
         voltage = logic.grid_voltage(data, sn, now=now, key=key, max_age_seconds=max_age)
@@ -458,10 +458,11 @@ class Default(WorkerEntrypoint):
         up to a minute later, past Telegram's few-second window, so there refusals go
         to the chat instead and the spinner stops by itself."""
         latest = None
+        ttl = bot.PANEL_TTL_LIVE_SECONDS if acknowledge else bot.PANEL_TTL_SECONDS
         stale_panels = set()
         refused = {}  # user -> panel, one reply per non-admin per run
         for tap in presses:
-            verdict = bot.tap_verdict(tap, admins, time.time())
+            verdict = bot.tap_verdict(tap, admins, time.time(), ttl)
             if acknowledge:
                 answer = {"callback_query_id": tap["id"]}
                 if verdict != "ok":

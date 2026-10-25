@@ -12,8 +12,10 @@ BOILER = "/boiler"
 HELP_COMMANDS = frozenset({"/start", "/help"})
 
 # Buttons are refused once their panel is older than this, so a tap that sat in
-# Telegram's queue (or an old panel scrolled up in the chat) can't act later.
-PANEL_TTL_SECONDS = 10 * 60
+# Telegram's queue (or an old panel scrolled up in the chat) can't act later, and
+# nobody acts on the panel's status text once it is out of date.
+PANEL_TTL_SECONDS = 3 * 60  # polling: a cron run sees a press up to a minute later
+PANEL_TTL_LIVE_SECONDS = 60  # webhook: presses arrive within seconds
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
 
@@ -136,13 +138,13 @@ def taps(updates, chat_id):
     return found
 
 
-def tap_verdict(tap, admins, now):
-    """'ok', 'not_admin' or 'stale'. Admin is checked by Telegram user ID, which
-    Telegram authenticates, not by chat membership."""
+def tap_verdict(tap, admins, now, ttl=PANEL_TTL_SECONDS):
+    """'ok', 'not_admin' or 'stale' (panel older than ttl seconds). Admin is checked
+    by Telegram user ID, which Telegram authenticates, not by chat membership."""
     if str(tap.get("user")) not in admins:
         return "not_admin"
     date = tap.get("panel_date")
-    if not isinstance(date, int) or isinstance(date, bool) or now - date > PANEL_TTL_SECONDS:
+    if not isinstance(date, int) or isinstance(date, bool) or now - date > ttl:
         return "stale"
     return "ok"
 

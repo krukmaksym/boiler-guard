@@ -24,7 +24,7 @@ DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
-MAX_DATA_AGE_SECONDS = "900"
+MAX_DATA_AGE_SECONDS = "180"
 SHELLY_CHANNEL = "0"
 
 [observability]
@@ -54,7 +54,7 @@ DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
-MAX_DATA_AGE_SECONDS = "900"
+MAX_DATA_AGE_SECONDS = "180"
 SHELLY_CHANNEL = "0"
 
 [env.test.observability]

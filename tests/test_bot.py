@@ -124,6 +124,14 @@ class AdminButtonsTest(unittest.TestCase):
         undated = bot.taps([press(1, panel_date=None)], CHAT)[0]
         self.assertEqual(bot.tap_verdict(undated, self.ADMINS, NOW), "stale")
 
+    def test_webhook_panels_expire_sooner(self):
+        two_min = bot.taps([press(1, panel_date=NOW - 120)], CHAT)[0]
+        self.assertEqual(bot.tap_verdict(two_min, self.ADMINS, NOW), "ok")  # polling
+        live = bot.PANEL_TTL_LIVE_SECONDS
+        self.assertEqual(bot.tap_verdict(two_min, self.ADMINS, NOW, live), "stale")
+        fresh = bot.taps([press(1, panel_date=NOW - live)], CHAT)[0]
+        self.assertEqual(bot.tap_verdict(fresh, self.ADMINS, NOW, live), "ok")
+
     def test_control_message_says_switched_or_already(self):
         self.assertTrue(bot.control_message("on", "on", switched=True).startswith("🔌 Бойлер увімкнено."))
         already_on = bot.control_message("on", "on", switched=False)

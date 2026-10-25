@@ -9,7 +9,7 @@ import re
 TELEGRAM_API = "https://api.telegram.org"
 _TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
-BLIND_AFTER_SECONDS = 15 * 60
+BLIND_AFTER_SECONDS = 5 * 60
 ERROR_REPEAT_SECONDS = 60 * 60  # the same error is re-sent at most hourly
 # Below this the grid is gone; between this and OFF_VOLTAGE it is present but too low.
 GRID_LOST_BELOW = 100.0
@@ -112,7 +112,7 @@ BLIND_REASONS = {
 def blind_message(reason=None):
     cause = BLIND_REASONS.get(reason)
     return (
-        "⚠️ Вже 15 хвилин немає даних від інвертора Deye"
+        "⚠️ Вже 5 хвилин немає даних від інвертора Deye"
         + (f": {cause}" if cause else "")
         + ". Автоматичне вимкнення бойлера тимчасово не працює. "
         "Якщо зникне світло — вимкніть бойлер вручну."
