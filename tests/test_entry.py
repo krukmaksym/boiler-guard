@@ -257,6 +257,14 @@ class WebhookSecretTest(EntryTestCase):
         self.assertEqual(await worker.check_webhook(secret, on_the_hour + 3600), "missing")
 
 
+class ScheduledTimeTest(unittest.TestCase):
+    def test_uses_the_cron_time_not_the_clock(self):
+        controller = types.SimpleNamespace(scheduledTime=1_800_000_000_000)
+        self.assertEqual(entry.scheduled_time(controller), 1_800_000_000)
+        with mock.patch.object(entry.time, "time", return_value=42.0):
+            self.assertEqual(entry.scheduled_time(None), 42.0)
+
+
 REFUSED = {"ok": False, "error_code": 409, "description": "Conflict: webhook is active"}
 
 

@@ -270,7 +270,14 @@ def webhook_problem(info, expected_path, now):
 def on_webhook_problem(state, problem):
     """Tell once per problem while Telegram updates can't reach the Worker. problem: a
     WEBHOOK_PROBLEM_MESSAGES code, or None when updates were confirmed to arrive. (Pass
-    nothing at all when that couldn't be checked, so a blip doesn't reset the dedup.)"""
+    nothing at all when that couldn't be checked, so a blip doesn't reset the dedup.)
+    "failing" is told only when two checks in a row see it: one delivery that failed
+    and is being retried (say, a request over the CPU limit) is not an outage."""
+    if problem != "failing":
+        state.pop("webhook_failing_seen", None)
+    elif not state.get("webhook_failing_seen"):
+        state["webhook_failing_seen"] = True
+        return None
     if problem is None:
         state.pop("webhook_problem", None)
         return None

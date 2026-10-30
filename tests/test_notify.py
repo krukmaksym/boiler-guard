@@ -168,6 +168,16 @@ class WebhookSecretTest(unittest.TestCase):
         self.assertEqual(state, {})
         self.assertEqual(notify.on_webhook_problem(state, "conflict"), conflict)  # broken again
 
+    def test_failing_needs_two_checks_in_a_row(self):
+        state = {}
+        self.assertIsNone(notify.on_webhook_problem(state, "failing"))  # maybe a single retry
+        self.assertIsNone(notify.on_webhook_problem(state, None))  # it was: delivered fine since
+        self.assertEqual(state, {})
+        self.assertIsNone(notify.on_webhook_problem(state, "failing"))
+        failing = notify.WEBHOOK_PROBLEM_MESSAGES["failing"]
+        self.assertEqual(notify.on_webhook_problem(state, "failing"), failing)
+        self.assertIsNone(notify.on_webhook_problem(state, "failing"))  # told once
+
     def test_conflict_detection(self):
         refused = {
             "ok": False,

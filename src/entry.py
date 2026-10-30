@@ -166,20 +166,21 @@ class Default(WorkerEntrypoint):
                 delivered = await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
                 log(f"notification flush failed: {type(exc).__name__}")
-            await self.handle_telegram_updates(state, run, delivered)
+            await self.poll_and_check_telegram(state, run, delivered, scheduled_time(controller))
 
-    async def handle_telegram_updates(self, state, run, delivered):
+    async def poll_and_check_telegram(self, state, run, delivered, now):
         """After the alerts: poll and answer commands, or in webhook mode check that
         Telegram still delivers, then warn once if updates can't reach the Worker.
         Never raises. delivered: whether the alerts' flush saved the notify state; if
-        it didn't, the warning waits, since saving now would drop the unsent alerts."""
+        it didn't, the warning waits, since saving now would drop the unsent alerts.
+        now: the cron's scheduled time, so a slow run still hits the hourly check."""
         problem = UNKNOWN
         try:
             secret = self.webhook_secret()
             if secret is None:  # webhook mode: Telegram pushes updates to fetch()
                 problem = await self.answer_commands(run)
             else:
-                problem = await self.check_webhook(secret, time.time())
+                problem = await self.check_webhook(secret, now)
         except Exception as exc:
             log(f"command handling failed: {type(exc).__name__}")
         if not delivered or problem is UNKNOWN:
@@ -692,6 +693,15 @@ class Default(WorkerEntrypoint):
                 now=time.time(),
             )
         )
+
+
+def scheduled_time(controller):
+    """The cron trigger's scheduled time in epoch seconds (exact, however long the run
+    took so far); the current time if the controller doesn't say."""
+    scheduled_ms = getattr(controller, "scheduledTime", None)
+    if isinstance(scheduled_ms, (int, float)) and not isinstance(scheduled_ms, bool):
+        return scheduled_ms / 1000
+    return time.time()
 
 
 def error_summary(exc):
