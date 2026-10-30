@@ -93,6 +93,11 @@ def battery_soc(data, sn, now, key="SOC", max_age_seconds=180):
     return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
 
 
+def backup_load(data, sn, now, key="UPSLoadPower", max_age_seconds=180):
+    """Power (W) the inverter is feeding to its backup (UPS) output, or None."""
+    return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
+
+
 def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     """Why grid_voltage() gives None, as (code, log detail); None when it doesn't.
 
