@@ -196,7 +196,7 @@ def power_line(watts):
     return f"⚡️ Потужність: {watts:.0f} Вт (вода нагріта)"
 
 
-def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=None):
+def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=None, load=None):
     lines = ["📊 Поточний стан"]
     if voltage is None:
         lines.append("❔ Немає свіжих даних від інвертора Deye")
@@ -216,6 +216,8 @@ def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=
         lines.append("✋ Ручний режим: бойлер вимкнено адміністратором")
     if soc is not None:
         lines.append(f"🔋 Батарея {soc:.0f}%")
+    if load is not None:
+        lines.append(f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт")
     if voltage is None:
         lines.append("⚠️ Автоматичний захист тимчасово не працює")
     else:
