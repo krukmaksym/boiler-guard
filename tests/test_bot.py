@@ -176,6 +176,11 @@ class StatusMessageTest(unittest.TestCase):
         self.assertNotIn("Потужність", bot.status_message(226.0, "on", 90.0))  # unknown power
         self.assertNotIn("Потужність", bot.status_message(0.0, "off", 90.0, power=0.0))  # off: obvious
 
+    def test_backup_load_line(self):
+        text = bot.status_message(0.0, "off", 64.0, load=642.6)
+        self.assertIn("🏠 Навантаження на резервний вихід інвертора: 643 Вт", text)
+        self.assertNotIn("резервний вихід", bot.status_message(226.0, "on", 90.0))  # unknown load
+
     def test_manual_off_line(self):
         self.assertIn("Ручний режим", bot.status_message(226.0, "off", 80.0, manual_off=True))
         self.assertNotIn("Ручний режим", bot.status_message(226.0, "on", 80.0))

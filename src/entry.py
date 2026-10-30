@@ -249,21 +249,24 @@ class Default(WorkerEntrypoint):
         return data
 
     async def deye_reading(self, secrets):
-        """(grid voltage, battery %, problem) from one Deye call. Voltage is None when
-        Deye is unavailable for any reason, and problem is then (code, log detail)."""
+        """(grid voltage, battery %, backup load W, problem) from one Deye call. Voltage
+        is None when Deye is unavailable for any reason, and problem is then
+        (code, log detail)."""
         try:
             data = await self.deye_latest(secrets)
         except Exception as exc:  # network errors, bad token response, ...
             log(f"Deye unavailable: {type(exc).__name__}: {exc}")
-            return None, None, ("unreachable", type(exc).__name__)
+            return None, None, None, ("unreachable", type(exc).__name__)
         now = time.time()
         max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
         sn = secrets["INVERTER_SN"]
         key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
         voltage = logic.grid_voltage(data, sn, now=now, key=key, max_age_seconds=max_age)
         soc = logic.battery_soc(data, sn, now=now, max_age_seconds=max_age)
+        load_key = self.var("BACKUP_LOAD_KEY", "UPSLoadPower")
+        load = logic.backup_load(data, sn, now=now, key=load_key, max_age_seconds=max_age)
         problem = logic.reading_problem(data, sn, now=now, key=key, max_age_seconds=max_age)
-        return voltage, soc, problem
+        return voltage, soc, load, problem
 
     # --- Shelly -----------------------------------------------------------
 
@@ -423,8 +426,8 @@ class Default(WorkerEntrypoint):
         that failed before reading). Read-only, like every Deye call."""
         if "voltage" in run:
             return
-        voltage, soc, _ = await self.deye_reading(self.secrets())
-        run.update(voltage=voltage, soc=soc)
+        voltage, soc, load, _ = await self.deye_reading(self.secrets())
+        run.update(voltage=voltage, soc=soc, load=load)
         if voltage is not None:
             run["desired"] = logic.desired_state(
                 voltage,
@@ -444,6 +447,7 @@ class Default(WorkerEntrypoint):
             "voltage": run.get("voltage"),
             "plug": plug,
             "soc": run.get("soc"),
+            "load": run.get("load"),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
             "manual_off": await self.kv_get(MODE_KEY) == logic.OFF,
             "power": power,
@@ -549,8 +553,8 @@ class Default(WorkerEntrypoint):
         secrets = self.secrets()
         channel = int(self.var("SHELLY_CHANNEL", "0"))
 
-        voltage, soc, problem = await self.deye_reading(secrets)
-        run.update(voltage=voltage, soc=soc)
+        voltage, soc, load, problem = await self.deye_reading(secrets)
+        run.update(voltage=voltage, soc=soc, load=load)
         outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
         if voltage is None:
             log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
