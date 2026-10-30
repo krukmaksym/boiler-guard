@@ -82,7 +82,7 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
             return {"isok": True}
 
         worker.shelly = shelly
-        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, None))
+        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None))
         return worker
 
 
