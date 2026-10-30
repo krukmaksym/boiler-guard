@@ -154,6 +154,7 @@ class Default(WorkerEntrypoint):
         else:
             outbox.append(notify.on_success(state))
         finally:
+            outbox.append(notify.on_webhook_secret(state, self.webhook_secret_weak()))
             try:
                 await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
@@ -177,6 +178,10 @@ class Default(WorkerEntrypoint):
             log("TELEGRAM_WEBHOOK_SECRET is too weak (need 32+ of A-Z a-z 0-9 _ -); webhook disabled")
             return None
         return secret
+
+    def webhook_secret_weak(self):
+        secret = self.var("TELEGRAM_WEBHOOK_SECRET", None)
+        return secret is not None and not webhook.valid_secret(secret)
 
     def is_expired(self):
         """The test environment must carry EXPIRES_AT; production normally has none."""
@@ -419,7 +424,8 @@ class Default(WorkerEntrypoint):
             await self.send_telegram(text, reply_to=status["reply_to"])
             log("answered status")
         if boiler:
-            text = bot.panel_message(bot.status_message(**snapshot))
+            ttl = bot.PANEL_TTL_LIVE_SECONDS if live else bot.PANEL_TTL_SECONDS
+            text = bot.panel_message(bot.status_message(**snapshot), ttl)
             await self.send_telegram(text, reply_to=boiler["reply_to"], markup=bot.PANEL_KEYBOARD)
             log("sent control panel")
 

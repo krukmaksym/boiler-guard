@@ -16,6 +16,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
+# In a git worktree ROOT is the worktree, but the vars files live only in the main
+# checkout: the parent of the shared .git directory.
+MAIN_ROOT = Path(
+    subprocess.check_output(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True
+    ).strip()
+).parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 BLOCKED = re.compile(r"(^|/)(\.prod\.vars|\.dev\.vars|\.test\.vars|\.env)(\..*)?$|(^|/)\.wrangler/")
@@ -32,8 +39,8 @@ PATTERNS = {
 def real_values():
     values = {}
     for name in (".prod.vars", ".dev.vars", ".test.vars"):
-        path = ROOT / name
-        if not path.exists():
+        path = next((d / name for d in (ROOT, MAIN_ROOT) if (d / name).exists()), None)
+        if path is None:
             continue
         for line in path.read_text().splitlines():
             m = re.match(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$", line)

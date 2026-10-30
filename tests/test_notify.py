@@ -154,5 +154,16 @@ class ErrorTest(unittest.TestCase):
         self.assertIsNone(notify.on_success(state))
 
 
+class WebhookSecretTest(unittest.TestCase):
+    def test_weak_secret_told_once_until_fixed(self):
+        state = {}
+        self.assertIsNone(notify.on_webhook_secret(state, weak=False))
+        self.assertEqual(notify.on_webhook_secret(state, weak=True), notify.BAD_WEBHOOK_CONFIG_MESSAGE)
+        self.assertIsNone(notify.on_webhook_secret(state, weak=True))
+        self.assertIsNone(notify.on_webhook_secret(state, weak=False))
+        self.assertEqual(state, {})
+        self.assertIsNotNone(notify.on_webhook_secret(state, weak=True))  # broken again
+
+
 if __name__ == "__main__":
     unittest.main()

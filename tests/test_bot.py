@@ -132,6 +132,10 @@ class AdminButtonsTest(unittest.TestCase):
         fresh = bot.taps([press(1, panel_date=NOW - live)], CHAT)[0]
         self.assertEqual(bot.tap_verdict(fresh, self.ADMINS, NOW, live), "ok")
 
+    def test_panel_message_states_the_real_ttl(self):
+        self.assertTrue(bot.panel_message("s").endswith("Кнопки діють 3 хв."))
+        self.assertTrue(bot.panel_message("s", bot.PANEL_TTL_LIVE_SECONDS).endswith("Кнопки діють 1 хв."))
+
     def test_control_message_says_switched_or_already(self):
         self.assertTrue(bot.control_message("on", "on", switched=True).startswith("🔌 Бойлер увімкнено."))
         already_on = bot.control_message("on", "on", switched=False)

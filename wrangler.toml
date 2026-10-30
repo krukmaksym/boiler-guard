@@ -12,7 +12,9 @@ preview_urls = false
 [triggers]
 crons = ["* * * * *"]
 
-# Holds only the auto-refreshed Deye token and the last desired plug state.
+# Holds the auto-refreshed Deye token, the last desired plug state, the admin's
+# manual-off flag, notification dedup state and Telegram bookkeeping (update offset,
+# webhook replay guard, status cooldowns).
 # Credentials live in Worker Secrets (see scripts/upload-secrets.sh).
 [[kv_namespaces]]
 binding = "STATE"
