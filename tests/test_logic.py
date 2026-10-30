@@ -238,6 +238,14 @@ class DeyeTokenTest(unittest.TestCase):
         with self.assertRaises(logic.ApiError):
             logic.parse_deye_token(200, {"success": False, "msg": "bad password"})
 
+    def test_login_backoff(self):
+        self.assertTrue(logic.deye_login_backoff(200))  # Deye refused: bad credentials
+        self.assertTrue(logic.deye_login_backoff(401))
+        self.assertTrue(logic.deye_login_backoff(429))
+        self.assertTrue(logic.deye_login_backoff(302))  # redirects aren't followed
+        self.assertFalse(logic.deye_login_backoff(500))  # Deye's own outage: retry next run
+        self.assertFalse(logic.deye_login_backoff(503))
+
     def test_auth_error_detection(self):
         self.assertTrue(logic.is_deye_auth_error(401, None))
         self.assertTrue(logic.is_deye_auth_error(200, {"success": False, "msg": "token expired"}))

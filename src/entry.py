@@ -197,6 +197,20 @@ class Default(WorkerEntrypoint):
         value = await self.env.STATE.get(key)
         return value if isinstance(value, str) and value else None
 
+    async def prod_held_off(self):
+        """Test Worker only: True while production's admin holds the boiler off. Both
+        Workers switch the same real plug, so the test one must honour that hold too.
+        Read from the PROD_STATE binding (env.test only); never written."""
+        prod = getattr(self.env, "PROD_STATE", None)
+        if prod is None:
+            return False
+        value = await prod.get(MODE_KEY)
+        return isinstance(value, str) and value == logic.OFF
+
+    async def held_off(self):
+        """True while an admin holds the boiler off (here or, for the test Worker, in production)."""
+        return await self.kv_get(MODE_KEY) == logic.OFF or await self.prod_held_off()
+
     async def kv_put(self, key, value, ttl=None):
         if ttl:
             options = to_js({"expirationTtl": int(ttl)}, dict_converter=Object.fromEntries)
@@ -233,7 +247,8 @@ class Default(WorkerEntrypoint):
         try:
             token, ttl = logic.parse_deye_token(status, data)
         except logic.ApiError:
-            await self.kv_put(TOKEN_BACKOFF_KEY, "1", TOKEN_BACKOFF_SECONDS)
+            if logic.deye_login_backoff(status):
+                await self.kv_put(TOKEN_BACKOFF_KEY, "1", TOKEN_BACKOFF_SECONDS)
             raise
         await self.kv_put(TOKEN_KEY, token, ttl)
         log("refreshed Deye token")
@@ -445,7 +460,7 @@ class Default(WorkerEntrypoint):
             "plug": plug,
             "soc": run.get("soc"),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
-            "manual_off": await self.kv_get(MODE_KEY) == logic.OFF,
+            "manual_off": await self.held_off(),
             "power": power,
         }
 
@@ -489,6 +504,8 @@ class Default(WorkerEntrypoint):
         """Carry out an admin's button press and return the reply. The mode is saved
         only after the plug is in the right state, so a failure changes nothing."""
         if action == logic.ON:
+            if await self.prod_held_off():
+                return bot.PROD_HOLD_MESSAGE
             await self.ensure_reading(run)  # "on" needs to know whether grid is present
         target = logic.control_target(action, run.get("desired"))
         switched = False
@@ -515,6 +532,10 @@ class Default(WorkerEntrypoint):
             await self.kv_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
         else:
             await self.env.STATE.delete(MODE_KEY)
+            if target is None and await self.kv_get(DESIRED_KEY) == logic.ON:
+                # "on" was saved while held off, so the plug may be off with grid present.
+                # Forget it: the next run with fresh grid data sees a change and switches on.
+                await self.env.STATE.delete(DESIRED_KEY)
         return bot.control_message(action, target, switched)
 
     async def poll_plug(self):
@@ -568,7 +589,7 @@ class Default(WorkerEntrypoint):
             return
 
         # Desired state changed. The admin's manual off wins over grid returning.
-        held = desired == logic.ON and await self.kv_get(MODE_KEY) == logic.OFF
+        held = desired == logic.ON and await self.held_off()
         target = logic.OFF if held else desired
 
         # Poll Shelly first, command only if it differs.
@@ -582,7 +603,7 @@ class Default(WorkerEntrypoint):
 
         if actual != target:
             await asyncio.sleep(1.1)  # Shelly cloud allows ~1 request/second
-            if target == logic.ON and await self.kv_get(MODE_KEY) == logic.OFF:
+            if target == logic.ON and await self.held_off():
                 # Last check before switching on: a ⛔ pressed while this run was deciding wins.
                 held, target = True, logic.OFF
                 log("admin held the boiler off while this run was deciding")
