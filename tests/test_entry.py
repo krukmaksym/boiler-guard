@@ -249,11 +249,12 @@ class WebhookSecretTest(EntryTestCase):
         worker = self.telegram_worker(secret)
         info = {"ok": True, "result": {"url": "https://x.workers.dev" + entry.webhook.webhook_path(secret)}}
         worker.telegram = mock.AsyncMock(return_value=(True, info))
-        self.assertIsNone(await worker.check_webhook(secret))
-        self.assertIs(await worker.check_webhook(secret), entry.UNKNOWN)  # checked this hour
-        worker.env.STATE.data.clear()
+        on_the_hour = 1_800_000_000 - 1_800_000_000 % 3600 + 5
+        self.assertIsNone(await worker.check_webhook(secret, on_the_hour))
+        self.assertIs(await worker.check_webhook(secret, on_the_hour + 60), entry.UNKNOWN)
+        self.assertEqual(worker.telegram.await_count, 1)  # other minutes: no call, no KV
         worker.telegram = mock.AsyncMock(return_value=(True, {"ok": True, "result": {"url": ""}}))
-        self.assertEqual(await worker.check_webhook(secret), "missing")
+        self.assertEqual(await worker.check_webhook(secret, on_the_hour + 3600), "missing")
 
 
 REFUSED = {"ok": False, "error_code": 409, "description": "Conflict: webhook is active"}
@@ -284,6 +285,18 @@ class ScheduledTest(EntryTestCase):
         worker = self.scheduled_worker((True, {"ok": True, "result": []}))
         await worker.scheduled(None)
         self.assertEqual(self.events, ["grid alert", "getUpdates"])
+
+    async def test_no_warning_is_saved_over_an_unsent_alert(self):
+        worker = self.scheduled_worker((False, REFUSED))
+
+        async def send_fails(text, reply_to=None, markup=None):
+            self.events.append(text)
+            return text != "grid alert"  # Telegram didn't take the grid alert; others go through
+
+        worker.send_telegram = send_fails
+        await worker.scheduled(None)
+        self.assertEqual(self.events, ["grid alert", "getUpdates"])  # the warning waits
+        self.assertNotIn(entry.NOTIFY_KEY, worker.env.STATE.data)  # the alert is retried next run
 
     async def test_a_blip_does_not_repeat_the_conflict_warning(self):
         worker = self.scheduled_worker((False, REFUSED))

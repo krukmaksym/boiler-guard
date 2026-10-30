@@ -58,8 +58,7 @@ VERIFY_OFF_SECONDS = 180
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
 LAST_UPDATE_KEY = "telegram:last_update"  # webhook: highest update_id handled (replay guard)
-WEBHOOK_CHECKED_KEY = "telegram:webhook_checked"  # webhook mode: getWebhookInfo at most hourly
-WEBHOOK_CHECK_SECONDS = 3600
+WEBHOOK_CHECK_SECONDS = 3600  # webhook mode: getWebhookInfo once an hour (on the hour's first run)
 COOLDOWN_KEY = "telegram:cooldown:{kind}"  # webhook: when status / the panel was last sent
 STATUS_COOLDOWN_SECONDS = 10  # each of them at most this often (on-demand Deye/Shelly reads)
 REQUEST_TIMEOUT_MS = 15000
@@ -167,23 +166,30 @@ class Default(WorkerEntrypoint):
                 delivered = await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
                 log(f"notification flush failed: {type(exc).__name__}")
+            await self.handle_telegram_updates(state, run, delivered)
+
+    async def handle_telegram_updates(self, state, run, delivered):
+        """After the alerts: poll and answer commands, or in webhook mode check that
+        Telegram still delivers, then warn once if updates can't reach the Worker.
+        Never raises. delivered: whether the alerts' flush saved the notify state; if
+        it didn't, the warning waits, since saving now would drop the unsent alerts."""
+        problem = UNKNOWN
+        try:
             secret = self.webhook_secret()
-            problem = UNKNOWN
-            try:
-                if secret is None:  # webhook mode: Telegram pushes updates to fetch()
-                    problem = await self.answer_commands(run)
-                else:
-                    problem = await self.check_webhook(secret)
-            except Exception as exc:
-                log(f"command handling failed: {type(exc).__name__}")
-            # Only on top of saved state: if the flush above failed, its changes stay unsaved.
-            if delivered and problem is not UNKNOWN:
-                try:
-                    before = json.dumps(state, sort_keys=True)
-                    message = notify.on_webhook_problem(state, problem)
-                    await self.flush(state, before, [message] if message else [])
-                except Exception as exc:
-                    log(f"notification flush failed: {type(exc).__name__}")
+            if secret is None:  # webhook mode: Telegram pushes updates to fetch()
+                problem = await self.answer_commands(run)
+            else:
+                problem = await self.check_webhook(secret, time.time())
+        except Exception as exc:
+            log(f"command handling failed: {type(exc).__name__}")
+        if not delivered or problem is UNKNOWN:
+            return
+        try:
+            before = json.dumps(state, sort_keys=True)
+            message = notify.on_webhook_problem(state, problem)
+            await self.flush(state, before, [message] if message else [])
+        except Exception as exc:
+            log(f"notification flush failed: {type(exc).__name__}")
 
     # --- config -----------------------------------------------------------
 
@@ -393,8 +399,9 @@ class Default(WorkerEntrypoint):
 
     async def answer_commands(self, run):
         """Polling mode: fetch new updates with getUpdates and handle them. Returns the
-        webhook problem: "conflict" when Telegram refuses because a webhook is set (nobody
-        gets answers then), None when polling worked, UNKNOWN when it couldn't tell."""
+        webhook problem: "conflict" when Telegram refuses polling (a webhook is set, or
+        something else polls this bot), None when polling worked, UNKNOWN when it
+        couldn't tell."""
         token, _ = self.telegram_config()
         if not token:
             return None
@@ -404,7 +411,7 @@ class Default(WorkerEntrypoint):
             payload["offset"] = offset
         ok, data = await self.telegram("getUpdates", payload)
         if not ok:
-            return "conflict" if notify.is_webhook_conflict(data) else UNKNOWN
+            return "conflict" if notify.is_polling_conflict(data) else UNKNOWN
         updates = data.get("result") or []
         # Confirm first: a command that crashes this run must not be replayed forever.
         new_offset = bot.next_offset(updates, offset)
@@ -413,19 +420,17 @@ class Default(WorkerEntrypoint):
         await self.handle_updates(updates, run, live=False)
         return None
 
-    async def check_webhook(self, secret):
-        """Webhook mode, at most hourly: "missing" when Telegram's webhook isn't set to
-        this Worker's path (nobody gets answers then), None when it is, UNKNOWN when it
-        wasn't checked this run."""
+    async def check_webhook(self, secret, now):
+        """Webhook mode, once an hour: the webhook problem code from getWebhookInfo
+        (see notify.webhook_problem), None when deliveries arrive, UNKNOWN when not
+        checked this run. Gated on the clock, so the other runs cost no I/O."""
         token, _ = self.telegram_config()
-        if not token or await self.kv_get(WEBHOOK_CHECKED_KEY):
+        if not token or int(now // 60) % (WEBHOOK_CHECK_SECONDS // 60):
             return UNKNOWN
         ok, data = await self.telegram("getWebhookInfo", {})
         if not ok:
             return UNKNOWN
-        await self.kv_put(WEBHOOK_CHECKED_KEY, "1", ttl=WEBHOOK_CHECK_SECONDS)
-        url = (data.get("result") or {}).get("url") or ""
-        return None if urlparse(url).path == webhook.webhook_path(secret) else "missing"
+        return notify.webhook_problem(data.get("result"), webhook.webhook_path(secret), now)
 
     async def handle_updates(self, updates, run, live):
         """Apply the admin's latest button press, then answer /status, /boiler, /help

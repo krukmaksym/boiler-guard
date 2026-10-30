@@ -5,6 +5,7 @@ run costs one KV read and writes only when something changes.
 """
 
 import re
+from urllib.parse import urlparse
 
 TELEGRAM_API = "https://api.telegram.org"
 _TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
@@ -141,12 +142,17 @@ RECOVERED_MESSAGE = "✅ boiler-guard знову працює нормально
 # Why Telegram updates aren't reaching the Worker, by webhook problem code.
 WEBHOOK_PROBLEM_MESSAGES = {
     "conflict": (
-        "⚠️ boiler-guard: у Telegram встановлено webhook, а Worker його не приймає (немає дійсного "
-        "TELEGRAM_WEBHOOK_SECRET), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
+        "⚠️ boiler-guard: Telegram не дає Worker отримувати оновлення: або в Telegram встановлено "
+        "webhook, а Worker його не приймає (немає дійсного TELEGRAM_WEBHOOK_SECRET), або цього бота "
+        "опитує ще інша програма. Бот не відповідає на команди і кнопки. Захист бойлера працює."
     ),
     "missing": (
         "⚠️ boiler-guard: Worker чекає оновлень через webhook, але в Telegram його не встановлено "
         "(або він веде деінде), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
+    ),
+    "failing": (
+        "⚠️ boiler-guard: Telegram не може доставити оновлення на webhook (Worker їх відхиляє або "
+        "недоступний), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
     ),
 }
 
@@ -237,11 +243,28 @@ def on_success(state):
     return None
 
 
-def is_webhook_conflict(response):
-    """True for Telegram's refusal of getUpdates while a webhook is set (HTTP 409)."""
-    if not isinstance(response, dict) or response.get("error_code") != 409:
-        return False
-    return "webhook" in str(response.get("description") or "").lower()
+def is_polling_conflict(response):
+    """True for Telegram's 409 refusal of getUpdates: a webhook is set, or another
+    process polls the same bot. Either way this Worker gets no updates."""
+    return isinstance(response, dict) and response.get("error_code") == 409
+
+
+WEBHOOK_ERROR_WINDOW_SECONDS = 3600
+
+
+def webhook_problem(info, expected_path, now):
+    """From getWebhookInfo's result: "missing" (not set to this Worker's path),
+    "failing" (deliveries erroring within the last hour with updates piling up), or
+    None when Telegram delivers here fine."""
+    info = info if isinstance(info, dict) else {}
+    if urlparse(str(info.get("url") or "")).path != expected_path:
+        return "missing"
+    last_error = info.get("last_error_date")
+    recent = isinstance(last_error, int) and now - last_error < WEBHOOK_ERROR_WINDOW_SECONDS
+    pending = info.get("pending_update_count")
+    if recent and isinstance(pending, int) and pending > 0:
+        return "failing"
+    return None
 
 
 def on_webhook_problem(state, problem):

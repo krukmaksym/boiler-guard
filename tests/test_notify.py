@@ -174,15 +174,29 @@ class WebhookSecretTest(unittest.TestCase):
             "error_code": 409,
             "description": "Conflict: can't use getUpdates method while webhook is active",
         }
-        self.assertTrue(notify.is_webhook_conflict(refused))
+        self.assertTrue(notify.is_polling_conflict(refused))
         other_poller = {
             "ok": False,
             "error_code": 409,
             "description": "Conflict: terminated by other getUpdates",
         }
-        self.assertFalse(notify.is_webhook_conflict(other_poller))
-        self.assertFalse(notify.is_webhook_conflict({"ok": False, "error_code": 502}))
-        self.assertFalse(notify.is_webhook_conflict(None))
+        self.assertTrue(notify.is_polling_conflict(other_poller))  # updates go elsewhere too
+        self.assertFalse(notify.is_polling_conflict({"ok": False, "error_code": 502}))
+        self.assertFalse(notify.is_polling_conflict(None))
+
+    def test_webhook_problem_from_info(self):
+        path, now = "/telegram/abc", T0
+        url = "https://x.workers.dev" + path
+        self.assertIsNone(notify.webhook_problem({"url": url, "pending_update_count": 0}, path, now))
+        self.assertEqual(notify.webhook_problem({"url": ""}, path, now), "missing")
+        self.assertEqual(notify.webhook_problem(None, path, now), "missing")
+        self.assertEqual(notify.webhook_problem({"url": "https://x.workers.dev/other"}, path, now), "missing")
+        failing = {"url": url, "last_error_date": now - 120, "pending_update_count": 7}
+        self.assertEqual(notify.webhook_problem(failing, path, now), "failing")
+        recovered = dict(failing, pending_update_count=0)  # old error, nothing piling up
+        self.assertIsNone(notify.webhook_problem(recovered, path, now))
+        long_ago = dict(failing, last_error_date=now - 2 * 3600)
+        self.assertIsNone(notify.webhook_problem(long_ago, path, now))
 
 
 if __name__ == "__main__":
