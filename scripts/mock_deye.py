@@ -56,6 +56,7 @@ class Handler(BaseHTTPRequestHandler):
                     "dataList": [
                         {"key": "GridVoltageL1L2", "value": state["voltage"], "unit": "V"},
                         {"key": "LoadVoltageL1L2", "value": "230.00", "unit": "V"},
+                        {"key": "UPSLoadPower", "value": "640", "unit": "W"},
                     ],
                 }
                 for sn in body.get("deviceList", [])

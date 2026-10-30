@@ -78,7 +78,7 @@ npx --no-install wrangler tail boiler-guard             # watch the minute-by-mi
 To change only secrets later: `scripts/upload-secrets.sh .prod.vars` (also seeds
 `BEARER_TOKEN` into KV if set).
 
-Settings that aren't secret (thresholds, voltage key, data age, Shelly channel)
+Settings that aren't secret (thresholds, voltage and backup-load keys, data age, Shelly channel)
 are in `[vars]` in `wrangler.toml`.
 
 ### CI/CD
@@ -139,8 +139,9 @@ For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests
 #### Asking the bot: `/status`
 
 Send `/status` in the chat and the bot replies on its next run (within a minute) with
-grid voltage, the boiler's real on/off state, its live power draw, battery charge and
-whether protection is active. `/start` or `/help` explain what it does.
+grid voltage, the boiler's real on/off state, its live power draw, battery charge,
+the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`)
+and whether protection is active. `/start` or `/help` explain what it does.
 
 The power line tells whether the boiler is actually heating: above 20 W it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is

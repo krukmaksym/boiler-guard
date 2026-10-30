@@ -83,6 +83,14 @@ class GridVoltageTest(unittest.TestCase):
         self.assertIsNone(logic.battery_soc(deye(), SN, NOW))  # no SOC key
         self.assertIsNone(logic.battery_soc(data, SN, NOW + 3600))  # stale
 
+    def test_backup_load(self):
+        data = deye()
+        data["deviceDataList"][0]["dataList"].append({"key": "UPSLoadPower", "value": "640", "unit": "W"})
+        self.assertEqual(logic.backup_load(data, SN, NOW), 640.0)
+        self.assertIsNone(logic.backup_load(deye(), SN, NOW))  # no load key
+        self.assertIsNone(logic.backup_load(data, SN, NOW + 3600))  # stale
+        self.assertIsNone(logic.backup_load(data, SN, NOW, key="OtherLoad"))
+
     def test_millisecond_timestamp(self):
         self.assertEqual(logic.grid_voltage(deye(collected=(NOW - 60) * 1000), SN, NOW), 223.2)
 
