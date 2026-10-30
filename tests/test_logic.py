@@ -267,5 +267,33 @@ class DeyeTokenTest(unittest.TestCase):
         self.assertFalse(logic.is_deye_auth_error(200, deye()))
 
 
+class DeviceReadingsTest(unittest.TestCase):
+    def test_matches_the_single_value_functions(self):
+        with_load = deye()
+        with_load["deviceDataList"][0]["dataList"] += [
+            {"key": "SOC", "value": "87", "unit": "%"},
+            {"key": "UPSLoadPower", "value": "640", "unit": "W"},
+        ]
+        responses = [
+            with_load,
+            deye(),
+            deye(voltage="n/a"),
+            deye(collected=NOW - 3600),
+            deye(state=2),
+            deye(sn="other"),
+            {"success": False, "msg": "busy"},
+            None,
+        ]
+        for data in responses:
+            expected = (
+                logic.grid_voltage(data, SN, NOW),
+                logic.battery_soc(data, SN, NOW),
+                logic.backup_load(data, SN, NOW),
+                logic.reading_problem(data, SN, NOW),
+            )
+            self.assertEqual(logic.device_readings(data, SN, NOW), expected)
+        self.assertEqual(logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, None))
+
+
 if __name__ == "__main__":
     unittest.main()

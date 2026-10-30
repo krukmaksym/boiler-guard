@@ -18,11 +18,9 @@ from pathlib import Path
 ROOT = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
 # In a git worktree ROOT is the worktree, but the vars files live only in the main
 # checkout: the parent of the shared .git directory.
-MAIN_ROOT = Path(
-    subprocess.check_output(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True
-    ).strip()
-).parent
+# --git-common-dir may be relative to ROOT (no --path-format: that needs git 2.31+).
+COMMON_DIR = subprocess.check_output(["git", "rev-parse", "--git-common-dir"], text=True, cwd=ROOT).strip()
+MAIN_ROOT = (ROOT / COMMON_DIR).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 BLOCKED = re.compile(r"(^|/)(\.prod\.vars|\.dev\.vars|\.test\.vars|\.env)(\..*)?$|(^|/)\.wrangler/")

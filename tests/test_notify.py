@@ -17,6 +17,7 @@ class TelegramUrlTest(unittest.TestCase):
     def test_method_allowlist(self):
         self.assertTrue(notify.telegram_api_url(TOKEN, "getUpdates").endswith("/getUpdates"))
         self.assertTrue(notify.telegram_api_url(TOKEN, "answerCallbackQuery"))  # webhook mode
+        self.assertTrue(notify.telegram_api_url(TOKEN, "getWebhookInfo"))  # read-only check
         # The Worker can never (re)configure its own webhook; only the setup script can.
         for method in ("deleteMessage", "setWebhook", "deleteWebhook", "sendMessage/../x"):
             with self.assertRaises(notify.NotifyError):
@@ -155,14 +156,57 @@ class ErrorTest(unittest.TestCase):
 
 
 class WebhookSecretTest(unittest.TestCase):
-    def test_weak_secret_told_once_until_fixed(self):
+    def test_problem_told_once_until_fixed(self):
         state = {}
-        self.assertIsNone(notify.on_webhook_secret(state, weak=False))
-        self.assertEqual(notify.on_webhook_secret(state, weak=True), notify.BAD_WEBHOOK_CONFIG_MESSAGE)
-        self.assertIsNone(notify.on_webhook_secret(state, weak=True))
-        self.assertIsNone(notify.on_webhook_secret(state, weak=False))
+        conflict = notify.WEBHOOK_PROBLEM_MESSAGES["conflict"]
+        self.assertIsNone(notify.on_webhook_problem(state, None))
+        self.assertEqual(notify.on_webhook_problem(state, "conflict"), conflict)
+        self.assertIsNone(notify.on_webhook_problem(state, "conflict"))
+        missing = notify.on_webhook_problem(state, "missing")  # a different problem is told too
+        self.assertEqual(missing, notify.WEBHOOK_PROBLEM_MESSAGES["missing"])
+        self.assertIsNone(notify.on_webhook_problem(state, None))
         self.assertEqual(state, {})
-        self.assertIsNotNone(notify.on_webhook_secret(state, weak=True))  # broken again
+        self.assertEqual(notify.on_webhook_problem(state, "conflict"), conflict)  # broken again
+
+    def test_failing_needs_two_checks_in_a_row(self):
+        state = {}
+        self.assertIsNone(notify.on_webhook_problem(state, "failing"))  # maybe a single retry
+        self.assertIsNone(notify.on_webhook_problem(state, None))  # it was: delivered fine since
+        self.assertEqual(state, {})
+        self.assertIsNone(notify.on_webhook_problem(state, "failing"))
+        failing = notify.WEBHOOK_PROBLEM_MESSAGES["failing"]
+        self.assertEqual(notify.on_webhook_problem(state, "failing"), failing)
+        self.assertIsNone(notify.on_webhook_problem(state, "failing"))  # told once
+
+    def test_conflict_detection(self):
+        refused = {
+            "ok": False,
+            "error_code": 409,
+            "description": "Conflict: can't use getUpdates method while webhook is active",
+        }
+        self.assertTrue(notify.is_polling_conflict(refused))
+        other_poller = {
+            "ok": False,
+            "error_code": 409,
+            "description": "Conflict: terminated by other getUpdates",
+        }
+        self.assertTrue(notify.is_polling_conflict(other_poller))  # updates go elsewhere too
+        self.assertFalse(notify.is_polling_conflict({"ok": False, "error_code": 502}))
+        self.assertFalse(notify.is_polling_conflict(None))
+
+    def test_webhook_problem_from_info(self):
+        path, now = "/telegram/abc", T0
+        url = "https://x.workers.dev" + path
+        self.assertIsNone(notify.webhook_problem({"url": url, "pending_update_count": 0}, path, now))
+        self.assertEqual(notify.webhook_problem({"url": ""}, path, now), "missing")
+        self.assertEqual(notify.webhook_problem(None, path, now), "missing")
+        self.assertEqual(notify.webhook_problem({"url": "https://x.workers.dev/other"}, path, now), "missing")
+        failing = {"url": url, "last_error_date": now - 120, "pending_update_count": 7}
+        self.assertEqual(notify.webhook_problem(failing, path, now), "failing")
+        recovered = dict(failing, pending_update_count=0)  # old error, nothing piling up
+        self.assertIsNone(notify.webhook_problem(recovered, path, now))
+        long_ago = dict(failing, last_error_date=now - 2 * 3600)
+        self.assertIsNone(notify.webhook_problem(long_ago, path, now))
 
 
 if __name__ == "__main__":

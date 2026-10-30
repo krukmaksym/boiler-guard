@@ -46,6 +46,9 @@ TOKEN_KEY = "deye:token"  # noqa: S105
 TOKEN_BACKOFF_KEY = "deye:token_backoff"  # noqa: S105
 TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on bad credentials
 DESIRED_KEY = "state:desired"
+# Saved instead of "on" when grid is back but the admin holds the plug off, so once the
+# hold ends (by any path) the next run with grid sees work to do and switches on.
+HELD_ON = "on:held"
 MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
 # Set for a few minutes after the admin presses ⛔: the cron then checks the plug really
 # stayed off (a switch-on racing the press, or reading a not-yet-visible mode from KV,
@@ -55,10 +58,14 @@ VERIFY_OFF_SECONDS = 180
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
 LAST_UPDATE_KEY = "telegram:last_update"  # webhook: highest update_id handled (replay guard)
+WEBHOOK_CHECK_SECONDS = 3600  # webhook mode: getWebhookInfo once an hour (on the hour's first run)
 COOLDOWN_KEY = "telegram:cooldown:{kind}"  # webhook: when status / the panel was last sent
 STATUS_COOLDOWN_SECONDS = 10  # each of them at most this often (on-demand Deye/Shelly reads)
 REQUEST_TIMEOUT_MS = 15000
 NOTIFY_TIMEOUT_MS = 10000
+
+
+UNKNOWN = object()  # a webhook problem check that couldn't tell this run
 
 
 class ConfigError(Exception):
@@ -154,16 +161,36 @@ class Default(WorkerEntrypoint):
         else:
             outbox.append(notify.on_success(state))
         finally:
-            outbox.append(notify.on_webhook_secret(state, self.webhook_secret_weak()))
+            delivered = False
             try:
-                await self.flush(state, before, [m for m in outbox if m])
+                delivered = await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
                 log(f"notification flush failed: {type(exc).__name__}")
-            if self.webhook_secret() is None:  # webhook mode: Telegram pushes updates to fetch()
-                try:
-                    await self.answer_commands(run)
-                except Exception as exc:
-                    log(f"command handling failed: {type(exc).__name__}")
+            await self.poll_and_check_telegram(state, run, delivered, scheduled_time(controller))
+
+    async def poll_and_check_telegram(self, state, run, delivered, now):
+        """After the alerts: poll and answer commands, or in webhook mode check that
+        Telegram still delivers, then warn once if updates can't reach the Worker.
+        Never raises. delivered: whether the alerts' flush saved the notify state; if
+        it didn't, the warning waits, since saving now would drop the unsent alerts.
+        now: the cron's scheduled time, so a slow run still hits the hourly check."""
+        problem = UNKNOWN
+        try:
+            secret = self.webhook_secret()
+            if secret is None:  # webhook mode: Telegram pushes updates to fetch()
+                problem = await self.answer_commands(run)
+            else:
+                problem = await self.check_webhook(secret, now)
+        except Exception as exc:
+            log(f"command handling failed: {type(exc).__name__}")
+        if not delivered or problem is UNKNOWN:
+            return
+        try:
+            before = json.dumps(state, sort_keys=True)
+            message = notify.on_webhook_problem(state, problem)
+            await self.flush(state, before, [message] if message else [])
+        except Exception as exc:
+            log(f"notification flush failed: {type(exc).__name__}")
 
     # --- config -----------------------------------------------------------
 
@@ -178,10 +205,6 @@ class Default(WorkerEntrypoint):
             log("TELEGRAM_WEBHOOK_SECRET is too weak (need 32+ of A-Z a-z 0-9 _ -); webhook disabled")
             return None
         return secret
-
-    def webhook_secret_weak(self):
-        secret = self.var("TELEGRAM_WEBHOOK_SECRET", None)
-        return secret is not None and not webhook.valid_secret(secret)
 
     def is_expired(self):
         """The test environment must carry EXPIRES_AT; production normally has none."""
@@ -215,6 +238,11 @@ class Default(WorkerEntrypoint):
     async def held_off(self):
         """True while an admin holds the boiler off (here or, for the test Worker, in production)."""
         return await self.kv_get(MODE_KEY) == logic.OFF or await self.prod_held_off()
+
+    async def saved_desired(self):
+        """(raw KV value, desired state it stands for): HELD_ON counts as "on"."""
+        saved = await self.kv_get(DESIRED_KEY)
+        return saved, logic.ON if saved == HELD_ON else saved
 
     async def kv_put(self, key, value, ttl=None):
         if ttl:
@@ -281,12 +309,8 @@ class Default(WorkerEntrypoint):
         max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
         sn = secrets["INVERTER_SN"]
         key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
-        voltage = logic.grid_voltage(data, sn, now=now, key=key, max_age_seconds=max_age)
-        soc = logic.battery_soc(data, sn, now=now, max_age_seconds=max_age)
         load_key = self.var("BACKUP_LOAD_KEY", "UPSLoadPower")
-        load = logic.backup_load(data, sn, now=now, key=load_key, max_age_seconds=max_age)
-        problem = logic.reading_problem(data, sn, now=now, key=key, max_age_seconds=max_age)
-        return voltage, soc, load, problem
+        return logic.device_readings(data, sn, now=now, key=key, load_key=load_key, max_age_seconds=max_age)
 
     # --- Shelly -----------------------------------------------------------
 
@@ -321,6 +345,7 @@ class Default(WorkerEntrypoint):
         after = json.dumps(state, sort_keys=True)
         if delivered and after != before:
             await self.kv_put(NOTIFY_KEY, after)
+        return delivered
 
     def telegram_config(self):
         token = self.var("TELEGRAM_BOT_TOKEN", None)
@@ -374,23 +399,39 @@ class Default(WorkerEntrypoint):
     # --- commands, keyboard and admin buttons --------------------------------
 
     async def answer_commands(self, run):
-        """Polling mode: fetch new updates with getUpdates and handle them."""
+        """Polling mode: fetch new updates with getUpdates and handle them. Returns the
+        webhook problem: "conflict" when Telegram refuses polling (a webhook is set, or
+        something else polls this bot), None when polling worked, UNKNOWN when it
+        couldn't tell."""
         token, _ = self.telegram_config()
         if not token:
-            return
+            return None
         offset = int(await self.kv_get(OFFSET_KEY) or 0)
         payload = {"timeout": 0, "allowed_updates": ["message", "callback_query"]}
         if offset:
             payload["offset"] = offset
         ok, data = await self.telegram("getUpdates", payload)
         if not ok:
-            return
+            return "conflict" if notify.is_polling_conflict(data) else UNKNOWN
         updates = data.get("result") or []
         # Confirm first: a command that crashes this run must not be replayed forever.
         new_offset = bot.next_offset(updates, offset)
         if new_offset != offset:  # KV write only when updates arrived
             await self.kv_put(OFFSET_KEY, str(new_offset))
         await self.handle_updates(updates, run, live=False)
+        return None
+
+    async def check_webhook(self, secret, now):
+        """Webhook mode, once an hour: the webhook problem code from getWebhookInfo
+        (see notify.webhook_problem), None when deliveries arrive, UNKNOWN when not
+        checked this run. Gated on the clock, so the other runs cost no I/O."""
+        token, _ = self.telegram_config()
+        if not token or int(now // 60) % (WEBHOOK_CHECK_SECONDS // 60):
+            return UNKNOWN
+        ok, data = await self.telegram("getWebhookInfo", {})
+        if not ok:
+            return UNKNOWN
+        return notify.webhook_problem(data.get("result"), webhook.webhook_path(secret), now)
 
     async def handle_updates(self, updates, run, live):
         """Apply the admin's latest button press, then answer /status, /boiler, /help
@@ -427,7 +468,9 @@ class Default(WorkerEntrypoint):
             await self.send_telegram(text, reply_to=status["reply_to"])
             log("answered status")
         if boiler:
-            ttl = bot.PANEL_TTL_LIVE_SECONDS if live else bot.PANEL_TTL_SECONDS
+            # Polling judges a press when the next cron sees it, so promise only the time
+            # that is sure to be accepted.
+            ttl = bot.PANEL_TTL_LIVE_SECONDS if live else bot.PANEL_TTL_SECONDS - bot.POLL_DELAY_SECONDS
             text = bot.panel_message(bot.status_message(**snapshot), ttl)
             await self.send_telegram(text, reply_to=boiler["reply_to"], markup=bot.PANEL_KEYBOARD)
             log("sent control panel")
@@ -452,7 +495,7 @@ class Default(WorkerEntrypoint):
         if voltage is not None:
             run["desired"] = logic.desired_state(
                 voltage,
-                await self.kv_get(DESIRED_KEY),
+                (await self.saved_desired())[1],
                 on_at=float(self.var("ON_VOLTAGE", "210")),
                 off_below=float(self.var("OFF_VOLTAGE", "205")),
             )
@@ -540,12 +583,10 @@ class Default(WorkerEntrypoint):
         if action == logic.OFF:
             await self.kv_put(MODE_KEY, logic.OFF)
             await self.kv_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
+            if (await self.saved_desired())[0] == logic.ON:
+                await self.kv_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
         else:
             await self.env.STATE.delete(MODE_KEY)
-            if target is None and await self.kv_get(DESIRED_KEY) == logic.ON:
-                # "on" was saved while held off, so the plug may be off with grid present.
-                # Forget it: the next run with fresh grid data sees a change and switches on.
-                await self.env.STATE.delete(DESIRED_KEY)
         return bot.control_message(action, target, switched)
 
     async def poll_plug(self):
@@ -562,8 +603,15 @@ class Default(WorkerEntrypoint):
 
     async def enforce_hold(self, secrets, channel, run):
         """Within VERIFY_OFF_SECONDS of a manual ⛔, make sure the plug really is off.
-        Costs one KV read on ordinary runs; Shelly is polled only inside the window."""
-        if not await self.kv_get(VERIFY_OFF_KEY) or await self.kv_get(MODE_KEY) != logic.OFF:
+        Costs one KV read on ordinary runs; Shelly is polled only inside the window.
+        The test Worker also enforces production's hold once after saving "on" (it may
+        have switched on just before production's ⛔), then saves HELD_ON so it doesn't
+        poll the shared Shelly account every minute for the rest of the hold."""
+        verifying = await self.kv_get(VERIFY_OFF_KEY) and await self.kv_get(MODE_KEY) == logic.OFF
+        prod_race = (
+            not verifying and await self.prod_held_off() and await self.kv_get(DESIRED_KEY) == logic.ON
+        )
+        if not (verifying or prod_race):
             return
         try:
             actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
@@ -573,6 +621,8 @@ class Default(WorkerEntrypoint):
                 await self.shelly("/device/relay/control", secrets, channel=channel, turn=logic.OFF)
                 run["plug"] = logic.OFF
                 log("re-applied the admin's manual off: the plug was on while held off")
+            if prod_race and actual is not None:
+                await self.kv_put(DESIRED_KEY, HELD_ON)
         except Exception as exc:  # retried on the next run while the window lasts
             log(f"manual-off check failed: {type(exc).__name__}")
 
@@ -588,18 +638,20 @@ class Default(WorkerEntrypoint):
             await self.enforce_hold(secrets, channel, run)  # switching off is always safe
             return
 
-        previous = await self.kv_get(DESIRED_KEY)
+        saved, previous = await self.saved_desired()
         on_at = float(self.var("ON_VOLTAGE", "210"))
         off_below = float(self.var("OFF_VOLTAGE", "205"))
         desired = logic.desired_state(voltage, previous, on_at=on_at, off_below=off_below)
         run["desired"] = desired
-        if desired is None or desired == previous:
+        # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.
+        resume = saved == HELD_ON and desired == logic.ON and not await self.held_off()
+        if desired is None or (desired == previous and not resume):
             log(f"grid {voltage:.1f}V, desired={desired}; no change")
             await self.enforce_hold(secrets, channel, run)
             return
 
         # Desired state changed. The admin's manual off wins over grid returning.
-        held = desired == logic.ON and await self.held_off()
+        held = not resume and desired == logic.ON and await self.held_off()
         target = logic.OFF if held else desired
 
         # Poll Shelly first, command only if it differs.
@@ -608,7 +660,7 @@ class Default(WorkerEntrypoint):
         if actual is None:
             log("Shelly plug offline/unknown; will retry next run")
             if not held:
-                outbox.append(notify.on_switch_failed(state, desired))
+                outbox.append(notify.on_switch_failed(state, desired, resume=resume))
             return  # don't persist, so the next run tries again
 
         if actual != target:
@@ -624,7 +676,10 @@ class Default(WorkerEntrypoint):
         else:
             log(f"grid {voltage:.1f}V: plug already {actual}" + (" (held off by admin)" if held else ""))
 
-        await self.kv_put(DESIRED_KEY, desired)
+        await self.kv_put(DESIRED_KEY, HELD_ON if held else desired)
+        if resume:
+            notify.on_resumed(state)
+            return  # no grid change to announce; the admin's ✅ reply already said so
         outbox.append(
             notify.on_switched(
                 state,
@@ -638,6 +693,15 @@ class Default(WorkerEntrypoint):
                 now=time.time(),
             )
         )
+
+
+def scheduled_time(controller):
+    """The cron trigger's scheduled time in epoch seconds (exact, however long the run
+    took so far); the current time if the controller doesn't say."""
+    scheduled_ms = getattr(controller, "scheduledTime", None)
+    if isinstance(scheduled_ms, (int, float)) and not isinstance(scheduled_ms, bool):
+        return scheduled_ms / 1000
+    return time.time()
 
 
 def error_summary(exc):

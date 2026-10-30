@@ -119,7 +119,9 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
   long the gap lasted. Every such run also logs the exact cause, e.g.
   `no trustworthy grid reading (last upload 4 min ago)`;
 - the plug can't be switched because Shelly is unreachable;
-- a run fails with an error (repeated at most hourly), and when it works again.
+- a run fails with an error (repeated at most hourly), and when it works again;
+- Telegram updates can't reach the Worker, so the bot can't answer commands or
+  buttons (see [Bot not answering](#bot-not-answering) below).
 
 Each event is sent once, not every minute. Messages go out only after the plug logic
 has run, with a 10 s timeout; a Telegram failure is logged and never affects the
@@ -232,8 +234,10 @@ After that, the same chat and admin checks as in polling mode apply. Status and
 the panel are each answered at most once per 10 s (they read Deye and Shelly), Telegram delivers one update at a time
 (`max_connections=1`), an update is never handled twice (`update_id` is
 remembered), and the Worker always answers 200 so Telegram doesn't retry an action.
-The Worker can't change its own webhook: `setWebhook` is only in the setup script's
-allowlist.
+The Worker can't change its own webhook: `setWebhook` and `deleteWebhook` are only
+in the setup script's allowlist. The Worker's own allowlist is `sendMessage`,
+`getUpdates`, `setMyCommands`, `answerCallbackQuery` and the read-only
+`getWebhookInfo` (`notify.TELEGRAM_METHODS`).
 
 Switch on (order matters):
 
@@ -247,6 +251,17 @@ python3 -I scripts/telegram_webhook.py info                     # host, pending 
 Switch back: `python3 -I scripts/telegram_webhook.py delete`, then remove the secret
 from the Worker (`npx --no-install wrangler secret delete TELEGRAM_WEBHOOK_SECRET`)
 and from `.prod.vars`.
+
+#### Bot not answering
+
+The Worker tells the chat once (and again only after it recovered) when Telegram
+updates can't reach it. Boiler protection keeps working either way.
+
+| Warning starts with | Why | Fix |
+|---|---|---|
+| "Telegram не дає Worker отримувати оновлення" | Polling, but Telegram refuses `getUpdates` (HTTP 409): a webhook is set while the Worker has no valid `TELEGRAM_WEBHOOK_SECRET`, or another program polls the same bot (e.g. a local `pywrangler dev` with production credentials). | Upload a valid secret, or `telegram_webhook.py delete`; stop the other poller. |
+| "Worker чекає оновлень через webhook" | Webhook mode, but Telegram's webhook isn't set to this Worker's path (checked hourly with `getWebhookInfo`). | `telegram_webhook.py set https://boiler-guard.<subdomain>.workers.dev` |
+| "Telegram не може доставити оновлення на webhook" | Webhook mode, and on two hourly checks in a row Telegram reported recent delivery errors with updates piling up (e.g. every request gets a 404). | `telegram_webhook.py info` shows the last error; check the secret and the IP ranges above. |
 
 ### Test environment: boiler-guard-test
 
