@@ -1,7 +1,8 @@
-"""Telegram commands and boiler control buttons, handled on the next cron run. Pure: no I/O.
+"""Telegram commands and boiler control buttons. Pure: no I/O.
 
-The Worker polls getUpdates once per run instead of exposing a webhook, so it
-still has no public URL. Only messages from the configured chat are handled.
+Updates arrive by webhook (answered within seconds) or, without a webhook secret,
+by polling getUpdates on each cron run (answered within a minute); see entry.py.
+Only messages from the configured chat are handled.
 /status, /help and the keyboard under the input field are read-only for everyone
 in the chat; the boiler on/off buttons work only for Telegram user IDs listed in
 TELEGRAM_ADMIN_IDS.
@@ -31,14 +32,14 @@ KEYBOARD_COMMANDS = {KEYBOARD_STATUS: STATUS, KEYBOARD_BOILER: BOILER}
 HELP_MESSAGE = (
     "👋 Я стежу за світлом і бойлером: вимикаю бойлер, коли зникає світло, "
     "і вмикаю, коли воно повертається.\n"
-    "Кнопки під полем вводу або команди (відповідь протягом хвилини):\n"
+    "Кнопки під полем вводу або команди:\n"
     "📊 /status — поточний стан.\n"
     "🎛 /boiler — керування бойлером (лише для адміністратора)."
 )
 
 MENU_MESSAGE = (
     "🤖 Вартовий світла і бойлера\n"
-    "Кнопки під полем вводу, відповідь прийде протягом хвилини:\n"
+    "Кнопки під полем вводу:\n"
     "📊 Покажи поточний статус — світло, бойлер, потужність, батарея.\n"
     "🎛 Покажи панель керування — увімкнути або вимкнути бойлер (лише адміністратор)."
 )
@@ -68,6 +69,10 @@ AUTO_NOTE = "Ним знову керує автоматичний захист.
 AUTO_WAIT_MESSAGE = (
     "🔌 Автоматичний режим відновлено. Зараз світла немає (або немає свіжих даних від "
     "інвертора), тому бойлер не вмикається від батареї. Він увімкнеться сам, коли буде світло."
+)
+PROD_HOLD_MESSAGE = (  # test Worker only
+    "⛔ Бойлер вимкнено вручну в робочому боті, тому тестовий бот його не вмикає. "
+    "Увімкніть його через робочий бот."
 )
 CONTROL_FAILED_MESSAGE = (
     "❌ Не вдалося змінити стан бойлера: розетка Shelly не відповідає. Спробуйте ще раз пізніше."
@@ -221,5 +226,6 @@ def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=
     return "\n".join(lines)
 
 
-def panel_message(status_text):
-    return f"{status_text}\n\nКнопки діють 10 хвилин."
+def panel_message(status_text, ttl_seconds=PANEL_TTL_SECONDS):
+    """ttl_seconds: how long tap_verdict accepts this panel's buttons."""
+    return f"{status_text}\n\nКнопки діють {max(ttl_seconds // 60, 1)} хв."

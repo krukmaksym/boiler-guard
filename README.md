@@ -181,7 +181,8 @@ polled for the reply only when someone asks.
   it stays off (the grid message says so) until the admin presses Увімкнути.
 - **🔌 Увімкнути**: returns to automatic control. With grid present the boiler is
   switched on right away. On battery, or without fresh Deye data, it is **never**
-  switched on from the bot; it comes on by itself when grid returns.
+  switched on from the bot; it comes on by itself on the next run with fresh data
+  showing grid.
 
 Each press is applied on the next run (within a minute) and confirmed in the chat.
 Guards:
@@ -266,7 +267,9 @@ scripts/test-env.sh down              # remove the webhook and delete the Worker
   stays for next time.
 - `test-env.sh` refuses to run if `.test.vars` shares the bot token, chat or webhook
   secret with `.prod.vars`, so it can never take over the production bot.
-- It reads the real inverter and switches the **real plug**, like production.
+- It reads the real inverter and switches the **real plug**, like production. It
+  reads production's KV (`PROD_STATE`, never written) so it never switches on a
+  boiler the production admin holds off with ⛔.
 - CI never deploys it; it's deployed from your checkout.
 
 ### Alerts

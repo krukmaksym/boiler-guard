@@ -135,6 +135,11 @@ def error_message(detail):
 
 RECOVERED_MESSAGE = "✅ boiler-guard знову працює нормально."
 
+BAD_WEBHOOK_CONFIG_MESSAGE = (
+    "⚠️ boiler-guard: TELEGRAM_WEBHOOK_SECRET не підходить (потрібно 32+ символів A-Z a-z 0-9 _ -), "
+    "тому бот не відповідає на команди і кнопки. Захист бойлера працює."
+)
+
 
 # --- dedup decisions -----------------------------------------------------------
 # Each takes the state dict and returns a message (or None), updating state in place.
@@ -208,3 +213,15 @@ def on_success(state):
     if state.pop("error", None):
         return RECOVERED_MESSAGE
     return None
+
+
+def on_webhook_secret(state, weak):
+    """Tell once while TELEGRAM_WEBHOOK_SECRET is set but invalid: webhook mode is off
+    then, and if Telegram's webhook is still set, polling gets refused too."""
+    if not weak:
+        state.pop("weak_webhook_secret", None)
+        return None
+    if state.get("weak_webhook_secret"):
+        return None
+    state["weak_webhook_secret"] = True
+    return BAD_WEBHOOK_CONFIG_MESSAGE

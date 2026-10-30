@@ -12,7 +12,9 @@ preview_urls = false
 [triggers]
 crons = ["* * * * *"]
 
-# Holds only the auto-refreshed Deye token and the last desired plug state.
+# Holds the auto-refreshed Deye token, the last desired plug state, the admin's
+# manual-off flag, notification dedup state and Telegram bookkeeping (update offset,
+# webhook replay guard, status cooldowns).
 # Credentials live in Worker Secrets (see scripts/upload-secrets.sh).
 [[kv_namespaces]]
 binding = "STATE"
@@ -47,6 +49,13 @@ crons = ["* * * * *"]
 [[env.test.kv_namespaces]]
 binding = "STATE"
 id = "9f2e8f04da484c3abd920fa5945e718b"
+
+# Production's namespace, read only for its manual-off hold (src/entry.py
+# prod_held_off): both Workers switch the same real plug, so the test one must
+# never switch on a boiler the production admin holds off. The code never writes it.
+[[env.test.kv_namespaces]]
+binding = "PROD_STATE"
+id = "ab7e5c69f89f42c7af5243d5de4f6c41"
 
 [env.test.vars]
 ENVIRONMENT = "test"  # makes EXPIRES_AT mandatory: without it the Worker never runs

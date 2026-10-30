@@ -62,6 +62,14 @@ def parse_deye_token(status, data):
     return token, ttl
 
 
+def deye_login_backoff(status):
+    """True when a failed Deye login should pause further logins. Deye answering and
+    refusing (bad credentials, rate limit, odd response) risks an account lockout if
+    retried every minute; a 5xx is Deye's own outage and must not blind the guard for
+    the whole backoff once Deye is back."""
+    return not (isinstance(status, int) and 500 <= status <= 599)
+
+
 DEYE_NO_PERMISSION_CODE = "2101042"  # "auth no operation permission"
 
 
