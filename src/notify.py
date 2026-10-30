@@ -20,8 +20,11 @@ class NotifyError(Exception):
 
 
 # The only Telegram Bot API methods the Worker ever calls. answerCallbackQuery only
-# works in webhook mode (polling sees presses too late to answer them).
-TELEGRAM_METHODS = frozenset({"sendMessage", "getUpdates", "setMyCommands", "answerCallbackQuery"})
+# works in webhook mode (polling sees presses too late to answer them); getWebhookInfo
+# is read-only, for checking in webhook mode that Telegram still delivers here.
+TELEGRAM_METHODS = frozenset(
+    {"sendMessage", "getUpdates", "setMyCommands", "answerCallbackQuery", "getWebhookInfo"}
+)
 # Used only by scripts/telegram_webhook.py on your machine, never by the Worker.
 SETUP_METHODS = frozenset({"setWebhook", "deleteWebhook", "getWebhookInfo"})
 
@@ -135,10 +138,17 @@ def error_message(detail):
 
 RECOVERED_MESSAGE = "✅ boiler-guard знову працює нормально."
 
-WEBHOOK_CONFLICT_MESSAGE = (
-    "⚠️ boiler-guard: у Telegram встановлено webhook, а Worker його не приймає (немає дійсного "
-    "TELEGRAM_WEBHOOK_SECRET), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
-)
+# Why Telegram updates aren't reaching the Worker, by webhook problem code.
+WEBHOOK_PROBLEM_MESSAGES = {
+    "conflict": (
+        "⚠️ boiler-guard: у Telegram встановлено webhook, а Worker його не приймає (немає дійсного "
+        "TELEGRAM_WEBHOOK_SECRET), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
+    ),
+    "missing": (
+        "⚠️ boiler-guard: Worker чекає оновлень через webhook, але в Telegram його не встановлено "
+        "(або він веде деінде), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
+    ),
+}
 
 
 # --- dedup decisions -----------------------------------------------------------
@@ -159,12 +169,24 @@ def on_voltage(state, voltage, now, reason=None):
     return blind_recovered_message(voltage, now - since) if notified else None
 
 
-def on_switch_failed(state, desired):
-    """Shelly unreachable when a switch was needed: tell once per desired state."""
+RESUME_FAILED_MESSAGE = (
+    "❌ Не вдалося увімкнути бойлер після ручного вимкнення: розетка Shelly не відповідає. "
+    "Програма пробуватиме щохвилини; увімкніть бойлер вручну, якщо потрібно."
+)
+
+
+def on_switch_failed(state, desired, resume=False):
+    """Shelly unreachable when a switch was needed: tell once per desired state.
+    resume: the switch-on was due because the admin's hold ended, not the grid."""
     if state.get("switch_failed") == desired:
         return None
     state["switch_failed"] = desired
-    return switch_failed_message(desired)
+    return RESUME_FAILED_MESSAGE if resume else switch_failed_message(desired)
+
+
+def on_resumed(state):
+    """The switch-on after the admin's hold succeeded: a later failure is news again."""
+    state.pop("switch_failed", None)
 
 
 def on_switched(
@@ -222,13 +244,14 @@ def is_webhook_conflict(response):
     return "webhook" in str(response.get("description") or "").lower()
 
 
-def on_webhook_conflict(state, conflict):
-    """Tell once while the Worker polls but Telegram delivers to a webhook instead (the
-    webhook is set, but the Worker has no valid TELEGRAM_WEBHOOK_SECRET to accept it)."""
-    if not conflict:
-        state.pop("webhook_conflict", None)
+def on_webhook_problem(state, problem):
+    """Tell once per problem while Telegram updates can't reach the Worker. problem: a
+    WEBHOOK_PROBLEM_MESSAGES code, or None when updates were confirmed to arrive. (Pass
+    nothing at all when that couldn't be checked, so a blip doesn't reset the dedup.)"""
+    if problem is None:
+        state.pop("webhook_problem", None)
         return None
-    if state.get("webhook_conflict"):
+    if state.get("webhook_problem") == problem:
         return None
-    state["webhook_conflict"] = True
-    return WEBHOOK_CONFLICT_MESSAGE
+    state["webhook_problem"] = problem
+    return WEBHOOK_PROBLEM_MESSAGES[problem]

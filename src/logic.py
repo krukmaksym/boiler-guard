@@ -93,27 +93,17 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     and stay ~230V on battery, so they must never be mistaken for grid.
     None covers: failed response, SN missing, inverter offline, stale or missing reading.
     """
-    return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[0]
 
 
 def battery_soc(data, sn, now, key="SOC", max_age_seconds=180):
     """Battery state of charge (%) from the same response, or None."""
-    return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
+    return device_readings(data, sn, now, soc_key=key, max_age_seconds=max_age_seconds)[1]
 
 
 def backup_load(data, sn, now, key="UPSLoadPower", max_age_seconds=180):
     """Power (W) the inverter is feeding to its backup (UPS) output, or None."""
-    return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
-
-
-def device_readings(data, sn, now, key="GridVoltageL1L2", load_key="UPSLoadPower", max_age_seconds=180):
-    """(grid voltage, battery %, backup load W, problem) with one device lookup: the
-    same values grid_voltage(), battery_soc(), backup_load() and reading_problem() give."""
-    device, problem = _fresh_device(data, sn, now, max_age_seconds)
-    voltage = _reading(device, key)
-    if problem is None and voltage is None:
-        problem = ("no_value", f"no {key} value")
-    return voltage, _reading(device, "SOC"), _reading(device, load_key), problem
+    return device_readings(data, sn, now, load_key=key, max_age_seconds=max_age_seconds)[2]
 
 
 def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
@@ -123,12 +113,19 @@ def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     "offline" (Deye marks the inverter offline), "stale" (no fresh upload),
     "no_value" (the voltage key is missing or not a number).
     """
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[3]
+
+
+def device_readings(
+    data, sn, now, key="GridVoltageL1L2", soc_key="SOC", load_key="UPSLoadPower", max_age_seconds=180
+):
+    """(grid voltage, battery %, backup load W, problem) from one device lookup; the
+    functions above each return one of these."""
     device, problem = _fresh_device(data, sn, now, max_age_seconds)
-    if problem:
-        return problem
-    if _reading(device, key) is None:
-        return "no_value", f"no {key} value"
-    return None
+    voltage = _reading(device, key)
+    if problem is None and voltage is None:
+        problem = ("no_value", f"no {key} value")
+    return voltage, _reading(device, soc_key), _reading(device, load_key), problem
 
 
 def _fresh_device(data, sn, now, max_age_seconds):

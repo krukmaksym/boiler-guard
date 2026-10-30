@@ -17,6 +17,7 @@ class TelegramUrlTest(unittest.TestCase):
     def test_method_allowlist(self):
         self.assertTrue(notify.telegram_api_url(TOKEN, "getUpdates").endswith("/getUpdates"))
         self.assertTrue(notify.telegram_api_url(TOKEN, "answerCallbackQuery"))  # webhook mode
+        self.assertTrue(notify.telegram_api_url(TOKEN, "getWebhookInfo"))  # read-only check
         # The Worker can never (re)configure its own webhook; only the setup script can.
         for method in ("deleteMessage", "setWebhook", "deleteWebhook", "sendMessage/../x"):
             with self.assertRaises(notify.NotifyError):
@@ -155,14 +156,17 @@ class ErrorTest(unittest.TestCase):
 
 
 class WebhookSecretTest(unittest.TestCase):
-    def test_conflict_told_once_until_fixed(self):
+    def test_problem_told_once_until_fixed(self):
         state = {}
-        self.assertIsNone(notify.on_webhook_conflict(state, conflict=False))
-        self.assertEqual(notify.on_webhook_conflict(state, conflict=True), notify.WEBHOOK_CONFLICT_MESSAGE)
-        self.assertIsNone(notify.on_webhook_conflict(state, conflict=True))
-        self.assertIsNone(notify.on_webhook_conflict(state, conflict=False))
+        conflict = notify.WEBHOOK_PROBLEM_MESSAGES["conflict"]
+        self.assertIsNone(notify.on_webhook_problem(state, None))
+        self.assertEqual(notify.on_webhook_problem(state, "conflict"), conflict)
+        self.assertIsNone(notify.on_webhook_problem(state, "conflict"))
+        missing = notify.on_webhook_problem(state, "missing")  # a different problem is told too
+        self.assertEqual(missing, notify.WEBHOOK_PROBLEM_MESSAGES["missing"])
+        self.assertIsNone(notify.on_webhook_problem(state, None))
         self.assertEqual(state, {})
-        self.assertIsNotNone(notify.on_webhook_conflict(state, conflict=True))  # broken again
+        self.assertEqual(notify.on_webhook_problem(state, "conflict"), conflict)  # broken again
 
     def test_conflict_detection(self):
         refused = {

@@ -58,10 +58,15 @@ VERIFY_OFF_SECONDS = 180
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
 LAST_UPDATE_KEY = "telegram:last_update"  # webhook: highest update_id handled (replay guard)
+WEBHOOK_CHECKED_KEY = "telegram:webhook_checked"  # webhook mode: getWebhookInfo at most hourly
+WEBHOOK_CHECK_SECONDS = 3600
 COOLDOWN_KEY = "telegram:cooldown:{kind}"  # webhook: when status / the panel was last sent
 STATUS_COOLDOWN_SECONDS = 10  # each of them at most this often (on-demand Deye/Shelly reads)
 REQUEST_TIMEOUT_MS = 15000
 NOTIFY_TIMEOUT_MS = 10000
+
+
+UNKNOWN = object()  # a webhook problem check that couldn't tell this run
 
 
 class ConfigError(Exception):
@@ -157,17 +162,28 @@ class Default(WorkerEntrypoint):
         else:
             outbox.append(notify.on_success(state))
         finally:
-            conflict = False
-            if self.webhook_secret() is None:  # webhook mode: Telegram pushes updates to fetch()
-                try:
-                    conflict = await self.answer_commands(run)
-                except Exception as exc:
-                    log(f"command handling failed: {type(exc).__name__}")
-            outbox.append(notify.on_webhook_conflict(state, conflict))
+            delivered = False
             try:
-                await self.flush(state, before, [m for m in outbox if m])
+                delivered = await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
                 log(f"notification flush failed: {type(exc).__name__}")
+            secret = self.webhook_secret()
+            problem = UNKNOWN
+            try:
+                if secret is None:  # webhook mode: Telegram pushes updates to fetch()
+                    problem = await self.answer_commands(run)
+                else:
+                    problem = await self.check_webhook(secret)
+            except Exception as exc:
+                log(f"command handling failed: {type(exc).__name__}")
+            # Only on top of saved state: if the flush above failed, its changes stay unsaved.
+            if delivered and problem is not UNKNOWN:
+                try:
+                    before = json.dumps(state, sort_keys=True)
+                    message = notify.on_webhook_problem(state, problem)
+                    await self.flush(state, before, [message] if message else [])
+                except Exception as exc:
+                    log(f"notification flush failed: {type(exc).__name__}")
 
     # --- config -----------------------------------------------------------
 
@@ -322,6 +338,7 @@ class Default(WorkerEntrypoint):
         after = json.dumps(state, sort_keys=True)
         if delivered and after != before:
             await self.kv_put(NOTIFY_KEY, after)
+        return delivered
 
     def telegram_config(self):
         token = self.var("TELEGRAM_BOT_TOKEN", None)
@@ -375,25 +392,40 @@ class Default(WorkerEntrypoint):
     # --- commands, keyboard and admin buttons --------------------------------
 
     async def answer_commands(self, run):
-        """Polling mode: fetch new updates with getUpdates and handle them. True when
-        Telegram refuses because a webhook is set (nobody gets answers then)."""
+        """Polling mode: fetch new updates with getUpdates and handle them. Returns the
+        webhook problem: "conflict" when Telegram refuses because a webhook is set (nobody
+        gets answers then), None when polling worked, UNKNOWN when it couldn't tell."""
         token, _ = self.telegram_config()
         if not token:
-            return False
+            return None
         offset = int(await self.kv_get(OFFSET_KEY) or 0)
         payload = {"timeout": 0, "allowed_updates": ["message", "callback_query"]}
         if offset:
             payload["offset"] = offset
         ok, data = await self.telegram("getUpdates", payload)
         if not ok:
-            return notify.is_webhook_conflict(data)
+            return "conflict" if notify.is_webhook_conflict(data) else UNKNOWN
         updates = data.get("result") or []
         # Confirm first: a command that crashes this run must not be replayed forever.
         new_offset = bot.next_offset(updates, offset)
         if new_offset != offset:  # KV write only when updates arrived
             await self.kv_put(OFFSET_KEY, str(new_offset))
         await self.handle_updates(updates, run, live=False)
-        return False
+        return None
+
+    async def check_webhook(self, secret):
+        """Webhook mode, at most hourly: "missing" when Telegram's webhook isn't set to
+        this Worker's path (nobody gets answers then), None when it is, UNKNOWN when it
+        wasn't checked this run."""
+        token, _ = self.telegram_config()
+        if not token or await self.kv_get(WEBHOOK_CHECKED_KEY):
+            return UNKNOWN
+        ok, data = await self.telegram("getWebhookInfo", {})
+        if not ok:
+            return UNKNOWN
+        await self.kv_put(WEBHOOK_CHECKED_KEY, "1", ttl=WEBHOOK_CHECK_SECONDS)
+        url = (data.get("result") or {}).get("url") or ""
+        return None if urlparse(url).path == webhook.webhook_path(secret) else "missing"
 
     async def handle_updates(self, updates, run, live):
         """Apply the admin's latest button press, then answer /status, /boiler, /help
@@ -566,10 +598,14 @@ class Default(WorkerEntrypoint):
     async def enforce_hold(self, secrets, channel, run):
         """Within VERIFY_OFF_SECONDS of a manual ⛔, make sure the plug really is off.
         Costs one KV read on ordinary runs; Shelly is polled only inside the window.
-        The test Worker also enforces production's hold for as long as it lasts, so a
-        switch-on racing production's ⛔ is undone within a minute."""
+        The test Worker also enforces production's hold once after saving "on" (it may
+        have switched on just before production's ⛔), then saves HELD_ON so it doesn't
+        poll the shared Shelly account every minute for the rest of the hold."""
         verifying = await self.kv_get(VERIFY_OFF_KEY) and await self.kv_get(MODE_KEY) == logic.OFF
-        if not (verifying or await self.prod_held_off()):
+        prod_race = (
+            not verifying and await self.prod_held_off() and await self.kv_get(DESIRED_KEY) == logic.ON
+        )
+        if not (verifying or prod_race):
             return
         try:
             actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
@@ -579,6 +615,8 @@ class Default(WorkerEntrypoint):
                 await self.shelly("/device/relay/control", secrets, channel=channel, turn=logic.OFF)
                 run["plug"] = logic.OFF
                 log("re-applied the admin's manual off: the plug was on while held off")
+            if prod_race and actual is not None:
+                await self.kv_put(DESIRED_KEY, HELD_ON)
         except Exception as exc:  # retried on the next run while the window lasts
             log(f"manual-off check failed: {type(exc).__name__}")
 
@@ -607,7 +645,7 @@ class Default(WorkerEntrypoint):
             return
 
         # Desired state changed. The admin's manual off wins over grid returning.
-        held = desired == logic.ON and await self.held_off()
+        held = not resume and desired == logic.ON and await self.held_off()
         target = logic.OFF if held else desired
 
         # Poll Shelly first, command only if it differs.
@@ -615,8 +653,8 @@ class Default(WorkerEntrypoint):
         run["plug"] = actual
         if actual is None:
             log("Shelly plug offline/unknown; will retry next run")
-            if not (held or resume):
-                outbox.append(notify.on_switch_failed(state, desired))
+            if not held:
+                outbox.append(notify.on_switch_failed(state, desired, resume=resume))
             return  # don't persist, so the next run tries again
 
         if actual != target:
@@ -634,6 +672,7 @@ class Default(WorkerEntrypoint):
 
         await self.kv_put(DESIRED_KEY, HELD_ON if held else desired)
         if resume:
+            notify.on_resumed(state)
             return  # no grid change to announce; the admin's ✅ reply already said so
         outbox.append(
             notify.on_switched(
