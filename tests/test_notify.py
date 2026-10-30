@@ -155,14 +155,30 @@ class ErrorTest(unittest.TestCase):
 
 
 class WebhookSecretTest(unittest.TestCase):
-    def test_weak_secret_told_once_until_fixed(self):
+    def test_conflict_told_once_until_fixed(self):
         state = {}
-        self.assertIsNone(notify.on_webhook_secret(state, weak=False))
-        self.assertEqual(notify.on_webhook_secret(state, weak=True), notify.BAD_WEBHOOK_CONFIG_MESSAGE)
-        self.assertIsNone(notify.on_webhook_secret(state, weak=True))
-        self.assertIsNone(notify.on_webhook_secret(state, weak=False))
+        self.assertIsNone(notify.on_webhook_conflict(state, conflict=False))
+        self.assertEqual(notify.on_webhook_conflict(state, conflict=True), notify.WEBHOOK_CONFLICT_MESSAGE)
+        self.assertIsNone(notify.on_webhook_conflict(state, conflict=True))
+        self.assertIsNone(notify.on_webhook_conflict(state, conflict=False))
         self.assertEqual(state, {})
-        self.assertIsNotNone(notify.on_webhook_secret(state, weak=True))  # broken again
+        self.assertIsNotNone(notify.on_webhook_conflict(state, conflict=True))  # broken again
+
+    def test_conflict_detection(self):
+        refused = {
+            "ok": False,
+            "error_code": 409,
+            "description": "Conflict: can't use getUpdates method while webhook is active",
+        }
+        self.assertTrue(notify.is_webhook_conflict(refused))
+        other_poller = {
+            "ok": False,
+            "error_code": 409,
+            "description": "Conflict: terminated by other getUpdates",
+        }
+        self.assertFalse(notify.is_webhook_conflict(other_poller))
+        self.assertFalse(notify.is_webhook_conflict({"ok": False, "error_code": 502}))
+        self.assertFalse(notify.is_webhook_conflict(None))
 
 
 if __name__ == "__main__":

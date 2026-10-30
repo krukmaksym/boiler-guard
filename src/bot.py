@@ -17,6 +17,7 @@ HELP_COMMANDS = frozenset({"/start", "/help"})
 # nobody acts on the panel's status text once it is out of date.
 PANEL_TTL_SECONDS = 3 * 60  # polling: a cron run sees a press up to a minute later
 PANEL_TTL_LIVE_SECONDS = 60  # webhook: presses arrive within seconds
+POLL_DELAY_SECONDS = 60  # polling: how late a cron run may see a press
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
 

@@ -135,9 +135,9 @@ def error_message(detail):
 
 RECOVERED_MESSAGE = "✅ boiler-guard знову працює нормально."
 
-BAD_WEBHOOK_CONFIG_MESSAGE = (
-    "⚠️ boiler-guard: TELEGRAM_WEBHOOK_SECRET не підходить (потрібно 32+ символів A-Z a-z 0-9 _ -), "
-    "тому бот не відповідає на команди і кнопки. Захист бойлера працює."
+WEBHOOK_CONFLICT_MESSAGE = (
+    "⚠️ boiler-guard: у Telegram встановлено webhook, а Worker його не приймає (немає дійсного "
+    "TELEGRAM_WEBHOOK_SECRET), тому бот не відповідає на команди і кнопки. Захист бойлера працює."
 )
 
 
@@ -215,13 +215,20 @@ def on_success(state):
     return None
 
 
-def on_webhook_secret(state, weak):
-    """Tell once while TELEGRAM_WEBHOOK_SECRET is set but invalid: webhook mode is off
-    then, and if Telegram's webhook is still set, polling gets refused too."""
-    if not weak:
-        state.pop("weak_webhook_secret", None)
+def is_webhook_conflict(response):
+    """True for Telegram's refusal of getUpdates while a webhook is set (HTTP 409)."""
+    if not isinstance(response, dict) or response.get("error_code") != 409:
+        return False
+    return "webhook" in str(response.get("description") or "").lower()
+
+
+def on_webhook_conflict(state, conflict):
+    """Tell once while the Worker polls but Telegram delivers to a webhook instead (the
+    webhook is set, but the Worker has no valid TELEGRAM_WEBHOOK_SECRET to accept it)."""
+    if not conflict:
+        state.pop("webhook_conflict", None)
         return None
-    if state.get("weak_webhook_secret"):
+    if state.get("webhook_conflict"):
         return None
-    state["weak_webhook_secret"] = True
-    return BAD_WEBHOOK_CONFIG_MESSAGE
+    state["webhook_conflict"] = True
+    return WEBHOOK_CONFLICT_MESSAGE

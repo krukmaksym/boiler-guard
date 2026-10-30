@@ -106,6 +106,16 @@ def backup_load(data, sn, now, key="UPSLoadPower", max_age_seconds=180):
     return _reading(_fresh_device(data, sn, now, max_age_seconds)[0], key)
 
 
+def device_readings(data, sn, now, key="GridVoltageL1L2", load_key="UPSLoadPower", max_age_seconds=180):
+    """(grid voltage, battery %, backup load W, problem) with one device lookup: the
+    same values grid_voltage(), battery_soc(), backup_load() and reading_problem() give."""
+    device, problem = _fresh_device(data, sn, now, max_age_seconds)
+    voltage = _reading(device, key)
+    if problem is None and voltage is None:
+        problem = ("no_value", f"no {key} value")
+    return voltage, _reading(device, "SOC"), _reading(device, load_key), problem
+
+
 def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     """Why grid_voltage() gives None, as (code, log detail); None when it doesn't.
 

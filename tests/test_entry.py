@@ -74,11 +74,13 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
             env.PROD_STATE = FakeKV(prod_state)
         worker = entry.Default(None, env)
         self.switched = []
+        self.plug = plug
 
         async def shelly(path, secrets, **params):
             if path == "/device/status":
-                return shelly_status(plug == logic.ON)
+                return shelly_status(self.plug == logic.ON)
             self.switched.append(params["turn"])
+            self.plug = params["turn"]
             return {"isok": True}
 
         worker.shelly = shelly
@@ -87,17 +89,39 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class ManualOnTest(EntryTestCase):
-    async def test_on_without_fresh_data_lets_the_next_run_switch_on(self):
-        # ⛔ held the boiler off while grid was present, so "on" was saved as desired.
-        worker = self.worker({entry.MODE_KEY: logic.OFF, entry.DESIRED_KEY: logic.ON})
-        reply = await worker.apply_control(logic.ON, {"voltage": None})  # Deye blind right now
+    async def held_with_grid_then_on_while_blind(self):
+        """⛔ with grid present (no grid transition), then ✅ while Deye has no fresh data."""
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON)
+        await worker.apply_control(logic.OFF, {})
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.HELD_ON)
+        reply = await worker.apply_control(logic.ON, {"voltage": None})
         self.assertEqual(reply, bot.AUTO_WAIT_MESSAGE)
         self.assertNotIn(entry.MODE_KEY, worker.env.STATE.data)
-        self.assertEqual(self.switched, [])
+        self.assertEqual(self.switched, [logic.OFF])
+        self.switched.clear()
+        return worker
 
-        await worker.check({}, [], {})  # next cron run: fresh reading, grid present
+    async def test_on_without_fresh_data_lets_the_next_run_switch_on(self):
+        worker = await self.held_with_grid_then_on_while_blind()
+        outbox = []
+        await worker.check({}, outbox, {})  # next cron run: fresh reading, grid present
         self.assertEqual(self.switched, [logic.ON])
         self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.ON)
+        self.assertEqual([m for m in outbox if m], [])  # grid didn't change: nothing to announce
+
+    async def test_grid_lost_after_that_is_still_announced(self):
+        worker = await self.held_with_grid_then_on_while_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=(0.0, 80.0, 0.0, None))  # grid gone
+        outbox = []
+        await worker.check({}, outbox, {})
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.OFF)
+        self.assertEqual(len([m for m in outbox if m and "Зникло світло" in m]), 1)
+
+    async def test_hold_keeps_the_plug_off_without_polling_shelly(self):
+        worker = self.worker({entry.MODE_KEY: logic.OFF, entry.DESIRED_KEY: entry.HELD_ON})
+        worker.shelly = mock.AsyncMock()
+        await worker.check({}, [], {})
+        worker.shelly.assert_not_awaited()
 
     async def test_on_on_battery_keeps_the_off_desired_state(self):
         worker = self.worker({entry.MODE_KEY: logic.OFF, entry.DESIRED_KEY: logic.OFF})
@@ -106,7 +130,7 @@ class ManualOnTest(EntryTestCase):
         self.assertEqual(self.switched, [])
 
     async def test_on_with_grid_switches_on(self):
-        worker = self.worker({entry.MODE_KEY: logic.OFF, entry.DESIRED_KEY: logic.ON})
+        worker = self.worker({entry.MODE_KEY: logic.OFF, entry.DESIRED_KEY: entry.HELD_ON})
         reply = await worker.apply_control(logic.ON, {"voltage": 230.0, "desired": logic.ON})
         self.assertEqual(self.switched, [logic.ON])
         self.assertTrue(reply.startswith("🔌 Бойлер увімкнено."))
@@ -118,9 +142,11 @@ class ManualOnTest(EntryTestCase):
         self.assertEqual(worker.env.STATE.data[entry.MODE_KEY], logic.OFF)
         self.switched.clear()
         worker.env.STATE.data[entry.DESIRED_KEY] = logic.OFF  # grid was gone, now it's back
-        worker.shelly = self.worker(plug=logic.OFF).shelly
-        await worker.check({}, [], {})
+        outbox = []
+        await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [])
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.HELD_ON)
+        self.assertTrue(any(m and "вимкнули вручну" in m for m in outbox))
 
 
 class ProductionHoldTest(EntryTestCase):
@@ -131,6 +157,14 @@ class ProductionHoldTest(EntryTestCase):
         reply = await worker.apply_control(logic.ON, {"voltage": 230.0, "desired": logic.ON})
         self.assertEqual(reply, bot.PROD_HOLD_MESSAGE)
         self.assertEqual(self.switched, [])
+
+    async def test_a_switch_on_racing_the_production_hold_is_undone(self):
+        # The test Worker switched on just before production's ⛔ landed.
+        worker = self.worker(
+            {entry.DESIRED_KEY: logic.ON}, prod_state={entry.MODE_KEY: logic.OFF}, plug=logic.ON
+        )
+        await worker.check({}, [], {})  # grid unchanged: only the hold enforcement runs
+        self.assertEqual(self.switched, [logic.OFF])
 
     async def test_without_a_production_hold_it_switches_on(self):
         worker = self.worker(prod_state={})
@@ -165,14 +199,22 @@ class WebhookReplayTest(EntryTestCase):
 
 
 class WebhookSecretTest(EntryTestCase):
-    def test_weak_secret_is_detected(self):
+    def test_weak_secret_means_polling(self):
         worker = self.worker()
-        self.assertFalse(worker.webhook_secret_weak())  # not set: polling, nothing to report
         worker.env.TELEGRAM_WEBHOOK_SECRET = "short"  # noqa: S105 - deliberately invalid
-        self.assertTrue(worker.webhook_secret_weak())
         self.assertIsNone(worker.webhook_secret())
         worker.env.TELEGRAM_WEBHOOK_SECRET = "a" * 40
-        self.assertFalse(worker.webhook_secret_weak())
+        self.assertEqual(worker.webhook_secret(), "a" * 40)
+
+    async def test_polling_refused_by_a_webhook_is_reported(self):
+        worker = self.worker()
+        worker.env.TELEGRAM_BOT_TOKEN = "123456789:" + "A" * 35
+        worker.env.TELEGRAM_CHAT_ID = "-100"
+        refused = {"ok": False, "error_code": 409, "description": "Conflict: webhook is active"}
+        worker.telegram = mock.AsyncMock(return_value=(False, refused))
+        self.assertTrue(await worker.answer_commands({}))
+        worker.telegram = mock.AsyncMock(return_value=(True, {"ok": True, "result": []}))
+        self.assertFalse(await worker.answer_commands({}))
 
 
 if __name__ == "__main__":
