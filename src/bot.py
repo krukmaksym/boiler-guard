@@ -79,8 +79,7 @@ CONTROL_FAILED_MESSAGE = (
     "❌ Не вдалося змінити стан бойлера: розетка Shelly не відповідає. Спробуйте ще раз пізніше."
 )
 CONFIG_FAILED_MESSAGE = (
-    "❌ Не вдалося змінити стан бойлера: помилка в налаштуваннях boiler-guard. "
-    "Подробиці — в журналі Worker."
+    "❌ Не вдалося змінити стан бойлера: помилка в налаштуваннях boiler-guard. Подробиці — в журналі Worker."
 )
 # Toasts for answerCallbackQuery (webhook mode only; Telegram allows up to 200 chars).
 NOT_ADMIN_TOAST = "🔒 Керувати бойлером може лише адміністратор"
