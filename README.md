@@ -4,8 +4,9 @@ A Cloudflare Python Worker that switches a Shelly smart plug (here: a bathroom
 boiler) **off when a Deye hybrid inverter loses grid**, and back on when grid
 returns, so the boiler never drains the battery during an outage.
 
-It runs on a one-minute cron trigger, has no public URL, and uses only the Python
-standard library plus Cloudflare's Workers SDK.
+It runs on a one-minute cron trigger and uses only the Python standard library plus
+Cloudflare's Workers SDK. Its only HTTP endpoint is the optional Telegram webhook;
+without it every request gets a 404.
 
 ## How it works
 
@@ -20,9 +21,12 @@ Every minute:
    - `>= ON_VOLTAGE` (210 V) → on
    - `< OFF_VOLTAGE` (205 V) → off
    - in between → keep the previous desired state
-3. If the desired state is unchanged since the last run, stop. No Shelly call.
+3. If the desired state is unchanged since the last run, stop. No Shelly call
+   (except for 3 minutes after an admin's manual off, see
+   [`/boiler`](#controlling-the-boiler-boiler-admin-only)).
 4. Otherwise poll Shelly Cloud `/device/status`, and send `/device/relay/control`
-   only if the plug's real state differs. Then save the new desired state in KV.
+   only if the plug's real state differs. If grid returns while an admin holds the
+   boiler off, it stays off. Then save the new desired state in KV.
    If Shelly is offline, nothing is saved, so the next run retries.
 
 The Deye bearer token is cached in KV and refreshed automatically when it
@@ -40,7 +44,8 @@ expires or is rejected.
   are refused before any request is made, with a test for each.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
   KV (`STATE`) holds only the derived Deye token, a login back-off flag, the
-  `on`/`off` state, the admin's manual-off flag and Telegram bookkeeping.
+  `on`/`off` state, the admin's manual-off flags, notification dedup state and
+  Telegram bookkeeping (update offset, webhook replay guard, cooldowns).
 - The only HTTP surface is the optional Telegram webhook (see below). Without
   `TELEGRAM_WEBHOOK_SECRET` every request gets a 404; preview URLs are off.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
@@ -78,7 +83,7 @@ npx --no-install wrangler tail boiler-guard             # watch the minute-by-mi
 To change only secrets later: `scripts/upload-secrets.sh .prod.vars` (also seeds
 `BEARER_TOKEN` into KV if set).
 
-Settings that aren't secret (thresholds, voltage and backup-load keys, data age, Shelly channel)
+Settings that aren't secret (Deye API host, thresholds, voltage and backup-load keys, data age, Shelly channel)
 are in `[vars]` in `wrangler.toml`.
 
 ### CI/CD
@@ -126,7 +131,7 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 Each event is sent once, not every minute. Messages go out only after the plug logic
 has run, with a 10 s timeout; a Telegram failure is logged and never affects the
 boiler. Only `https://api.telegram.org` is contacted, through an allowlist of Bot API
-methods, so the Worker still has no public URL.
+methods.
 
 Setup:
 
@@ -140,12 +145,13 @@ For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests
 
 #### Asking the bot: `/status`
 
-Send `/status` in the chat and the bot replies on its next run (within a minute) with
+Send `/status` in the chat and the bot replies within a minute (within seconds in
+[webhook mode](#instant-replies-telegram-webhook-optional)) with
 grid voltage, the boiler's real on/off state, its live power draw, battery charge,
 the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`)
 and whether protection is active. `/start` or `/help` explain what it does.
 
-The power line tells whether the boiler is actually heating: above 20 W it reads
+The power line tells whether the boiler is actually heating: from 20 W up it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is
 idle).
 
@@ -167,11 +173,11 @@ Disable, then remove and re-add the bot to the group): with privacy on, Telegram
 delivers only the first press after the keyboard is posted. With privacy off the bot
 receives every message in the chat; the Worker acts only on commands and the exact
 button texts, and stores or logs nothing else. The texts only ask for information;
-the panel's on/off buttons keep their admin check and 10-minute expiry. Run the
+the panel's on/off buttons keep their admin check and expiry. Run the
 script again only if the keyboard changes or someone hides it.
 
-There is no webhook: each run fetches new messages with `getUpdates`, so the Worker
-still has no public URL. Only the configured `TELEGRAM_CHAT_ID` is answered (anyone
+By default each run fetches new messages with `getUpdates`; in
+[webhook mode](#instant-replies-telegram-webhook-optional) Telegram pushes them. Only the configured `TELEGRAM_CHAT_ID` is answered (anyone
 else messaging the bot is ignored), and `/status` can't change anything. Shelly is
 polled for the reply only when someone asks.
 
@@ -186,14 +192,16 @@ polled for the reply only when someone asks.
   switched on from the bot; it comes on by itself on the next run with fresh data
   showing grid.
 
-Each press is applied on the next run (within a minute) and confirmed in the chat.
+Each press is applied on the next run (within a minute; right away in webhook mode)
+and confirmed in the chat.
 Guards:
 
 - Only Telegram user IDs in the `TELEGRAM_ADMIN_IDS` secret (comma-separated) can
   press the buttons. Telegram authenticates user IDs, so a leaked bot token can't
-  impersonate the admin. Anyone else sending `/boiler` or pressing a panel button gets
-  a reply with their own Telegram ID, which is also how you find yours.
-- Presses aren't acknowledged with `answerCallbackQuery`: Telegram accepts that only
+  impersonate the admin. Anyone else sending `/boiler` gets a reply with their own
+  Telegram ID, which is also how you find yours. A non-admin pressing a panel button
+  gets the same reply when polling, and a short pop-up in webhook mode.
+- When polling, presses aren't acknowledged with `answerCallbackQuery`: Telegram accepts that only
   within seconds, and a cron run sees the press up to a minute later. The button's
   spinner stops by itself, and the confirmation arrives as a chat message.
 - Buttons expire 3 minutes after the panel was sent (1 minute in webhook mode), so
@@ -229,6 +237,7 @@ the same plain 404 (`src/webhook.py`):
 - the path, `/telegram/<hash of the secret>`, which nobody can guess without it;
 - `POST` with a JSON body of at most 64 KB;
 - the client IP is in Telegram's webhook ranges (`149.154.160.0/20`, `91.108.4.0/22`).
+  Setting the var `TELEGRAM_IP_CHECK` to `off` skips only this check.
 
 After that, the same chat and admin checks as in polling mode apply. Status and
 the panel are each answered at most once per 10 s (they read Deye and Shelly), Telegram delivers one update at a time
@@ -334,7 +343,8 @@ python3 -m unittest discover -s tests -v
 
 - Cloud-dependent: if your internet goes down together with the grid, the Worker
   can't reach Shelly.
-- Deye Cloud data can lag by a few minutes, so switching isn't instant.
+- Switching isn't instant: Deye uploads about once a minute and the Worker runs once a
+  minute, so a grid change can take a couple of minutes to act on.
 
 ## License
 

@@ -1,4 +1,4 @@
-"""Register the bot's command menu (/status) with Telegram. Run once after setup.
+"""Register the bot's command menu (/status, /boiler) with Telegram. Run once after setup.
 
   python3 -I scripts/telegram_commands.py [.prod.vars]
 
