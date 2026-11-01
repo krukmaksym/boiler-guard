@@ -1,5 +1,6 @@
 """Pure decision logic: no I/O, no Workers runtime imports, so it is unit-testable."""
 
+import math
 import re
 from urllib.parse import urlencode, urlparse
 
@@ -135,7 +136,7 @@ def _fresh_device(data, sn, now, max_age_seconds):
         msg = data.get("msg") if isinstance(data, dict) else None
         return None, ("api", f"Deye returned no data (msg={str(msg)[:80]!r})")
     device = next(
-        (d for d in data.get("deviceDataList") or [] if str(d.get("deviceSn")) == str(sn)),
+        (d for d in _dicts(data.get("deviceDataList")) if str(d.get("deviceSn")) == str(sn)),
         None,
     )
     if device is None:
@@ -154,15 +155,44 @@ def _fresh_device(data, sn, now, max_age_seconds):
 
 
 def _reading(device, key):
+    """The key's value as a finite float, else None ("NaN" would slip past every threshold)."""
     if device is None:
         return None
-    for item in device.get("dataList") or []:
+    for item in _dicts(device.get("dataList")):
         if item.get("key") == key:
             try:
-                return float(item.get("value"))
+                value = float(item.get("value"))
             except (TypeError, ValueError):
                 return None
+            return value if math.isfinite(value) else None
     return None
+
+
+def _dicts(value):
+    """The dict items of a list from an upstream response; anything else is skipped,
+    so an odd response reads as "no data" instead of crashing the run."""
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _channel_status(data, channel):
+    """(Gen2/3 switch:<channel> dict, Gen1 entries) from a Shelly cloud /device/status
+    response, or None when the plug is offline or the response failed."""
+    if not isinstance(data, dict) or not data.get("isok"):
+        return None
+    body = _dict(data.get("data"))
+    if body.get("online") is not True:
+        return None
+    status = _dict(body.get("device_status"))
+
+    def gen1(name):
+        items = status.get(name)
+        return _dict(items[channel]) if isinstance(items, list) and len(items) > channel else {}
+
+    return _dict(status.get(f"switch:{channel}")), gen1("relays"), gen1("meters")
 
 
 def desired_state(voltage, previous, on_at=210.0, off_below=205.0):
@@ -178,19 +208,13 @@ def desired_state(voltage, previous, on_at=210.0, off_below=205.0):
 
 def plug_state(data, channel=0):
     """ON/OFF from a Shelly cloud /device/status response; None if offline/unknown."""
-    if not isinstance(data, dict) or not data.get("isok"):
+    found = _channel_status(data, channel)
+    if found is None:
         return None
-    body = data.get("data") or {}
-    if body.get("online") is not True:
-        return None
-    status = body.get("device_status") or {}
-    output = None
-    switch = status.get(f"switch:{channel}")  # Gen2/Gen3
-    if isinstance(switch, dict):
-        output = switch.get("output")
-    relays = status.get("relays")  # Gen1
-    if output is None and isinstance(relays, list) and len(relays) > channel:
-        output = relays[channel].get("ison")
+    switch, relay, _ = found
+    output = switch.get("output")  # Gen2/Gen3
+    if output is None:
+        output = relay.get("ison")  # Gen1
     if not isinstance(output, bool):
         return None
     return ON if output else OFF
@@ -198,20 +222,14 @@ def plug_state(data, channel=0):
 
 def plug_power(data, channel=0):
     """Live power draw in watts from a Shelly cloud /device/status response, or None."""
-    if not isinstance(data, dict) or not data.get("isok"):
+    found = _channel_status(data, channel)
+    if found is None:
         return None
-    body = data.get("data") or {}
-    if body.get("online") is not True:
-        return None
-    status = body.get("device_status") or {}
-    power = None
-    switch = status.get(f"switch:{channel}")  # Gen2/Gen3
-    if isinstance(switch, dict):
-        power = switch.get("apower")
-    meters = status.get("meters")  # Gen1
-    if power is None and isinstance(meters, list) and len(meters) > channel:
-        power = meters[channel].get("power")
-    if not isinstance(power, (int, float)) or isinstance(power, bool):
+    switch, _, meter = found
+    power = switch.get("apower")  # Gen2/Gen3
+    if power is None:
+        power = meter.get("power")  # Gen1
+    if not isinstance(power, (int, float)) or isinstance(power, bool) or not math.isfinite(power):
         return None
     return float(power)
 

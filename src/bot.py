@@ -78,6 +78,10 @@ PROD_HOLD_MESSAGE = (  # test Worker only
 CONTROL_FAILED_MESSAGE = (
     "❌ Не вдалося змінити стан бойлера: розетка Shelly не відповідає. Спробуйте ще раз пізніше."
 )
+CONFIG_FAILED_MESSAGE = (
+    "❌ Не вдалося змінити стан бойлера: помилка в налаштуваннях boiler-guard. "
+    "Подробиці — в журналі Worker."
+)
 # Toasts for answerCallbackQuery (webhook mode only; Telegram allows up to 200 chars).
 NOT_ADMIN_TOAST = "🔒 Керувати бойлером може лише адміністратор"
 STALE_TOAST = "⌛️ Ця панель застаріла, відкрийте нову"

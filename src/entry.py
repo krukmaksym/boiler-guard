@@ -177,7 +177,7 @@ class Default(WorkerEntrypoint):
         problem = UNKNOWN
         try:
             secret = self.webhook_secret()
-            if secret is None:  # webhook mode: Telegram pushes updates to fetch()
+            if secret is None:  # polling mode; with a secret, Telegram pushes updates to fetch()
                 problem = await self.answer_commands(run)
             else:
                 problem = await self.check_webhook(secret, now)
@@ -218,6 +218,15 @@ class Default(WorkerEntrypoint):
             raise ConfigError(f"missing Worker Secrets: {', '.join(missing)}")
         values["SHELLY_HOST"] = logic.validate_shelly_host(values["SHELLY_HOST"])
         return values
+
+    def thresholds(self):
+        """(ON_VOLTAGE, OFF_VOLTAGE). ON below OFF would break the hysteresis (a voltage
+        between them would count as grid present), so that is a config error."""
+        on_at = float(self.var("ON_VOLTAGE", "210"))
+        off_below = float(self.var("OFF_VOLTAGE", "205"))
+        if not on_at >= off_below:  # also refuses NaN
+            raise ConfigError("ON_VOLTAGE must not be below OFF_VOLTAGE")
+        return on_at, off_below
 
     # --- KV ---------------------------------------------------------------
 
@@ -406,7 +415,10 @@ class Default(WorkerEntrypoint):
         token, _ = self.telegram_config()
         if not token:
             return None
-        offset = int(await self.kv_get(OFFSET_KEY) or 0)
+        saved = await self.kv_get(OFFSET_KEY)
+        # A corrupted value must not stop polling for good. Starting over is safe: Telegram
+        # already dropped every update the last saved offset confirmed.
+        offset = int(saved) if saved and saved.isdigit() else 0
         payload = {"timeout": 0, "allowed_updates": ["message", "callback_query"]}
         if offset:
             payload["offset"] = offset
@@ -490,15 +502,13 @@ class Default(WorkerEntrypoint):
         that failed before reading). Read-only, like every Deye call."""
         if "voltage" in run:
             return
-        voltage, soc, load, _ = await self.deye_reading(self.secrets())
+        secrets = self.secrets()
+        on_at, off_below = self.thresholds()
+        voltage, soc, load, _ = await self.deye_reading(secrets)
         run.update(voltage=voltage, soc=soc, load=load)
         if voltage is not None:
-            run["desired"] = logic.desired_state(
-                voltage,
-                (await self.saved_desired())[1],
-                on_at=float(self.var("ON_VOLTAGE", "210")),
-                off_below=float(self.var("OFF_VOLTAGE", "205")),
-            )
+            previous = (await self.saved_desired())[1]
+            run["desired"] = logic.desired_state(voltage, previous, on_at=on_at, off_below=off_below)
 
     async def status_snapshot(self, run):
         """Everything a status reply shows. Shelly is polled fresh (state and live
@@ -556,18 +566,23 @@ class Default(WorkerEntrypoint):
     async def apply_control(self, action, run):
         """Carry out an admin's button press and return the reply. The mode is saved
         only after the plug is in the right state, so a failure changes nothing."""
-        if action == logic.ON:
-            if await self.prod_held_off():
-                return bot.PROD_HOLD_MESSAGE
-            await self.ensure_reading(run)  # "on" needs to know whether grid is present
+        if action == logic.ON and await self.prod_held_off():
+            return bot.PROD_HOLD_MESSAGE
+        try:
+            secrets = self.secrets()
+            channel = int(self.var("SHELLY_CHANNEL", "0"))
+            if action == logic.ON:
+                await self.ensure_reading(run)  # "on" needs to know whether grid is present
+        except (ConfigError, logic.ApiError, ValueError) as exc:
+            log(f"admin control: bad config: {type(exc).__name__}")
+            return bot.CONFIG_FAILED_MESSAGE
         target = logic.control_target(action, run.get("desired"))
         switched = False
         if target is not None:
             try:
-                secrets = self.secrets()
-                channel = int(self.var("SHELLY_CHANNEL", "0"))
                 if "plug" in run:
                     await asyncio.sleep(1.1)  # Shelly was already called this run (~1 request/second)
+                run["plug"] = None  # marks Shelly as called, even if this call fails
                 actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
                 if actual is None:
                     return bot.CONTROL_FAILED_MESSAGE
@@ -614,6 +629,7 @@ class Default(WorkerEntrypoint):
         if not (verifying or prod_race):
             return
         try:
+            run["plug"] = None  # marks Shelly as called, even if this call fails
             actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
             run["plug"] = actual
             if actual == logic.ON:
@@ -629,6 +645,7 @@ class Default(WorkerEntrypoint):
     async def check(self, state, outbox, run):
         secrets = self.secrets()
         channel = int(self.var("SHELLY_CHANNEL", "0"))
+        on_at, off_below = self.thresholds()
 
         voltage, soc, load, problem = await self.deye_reading(secrets)
         run.update(voltage=voltage, soc=soc, load=load)
@@ -639,8 +656,6 @@ class Default(WorkerEntrypoint):
             return
 
         saved, previous = await self.saved_desired()
-        on_at = float(self.var("ON_VOLTAGE", "210"))
-        off_below = float(self.var("OFF_VOLTAGE", "205"))
         desired = logic.desired_state(voltage, previous, on_at=on_at, off_below=off_below)
         run["desired"] = desired
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.
@@ -655,6 +670,7 @@ class Default(WorkerEntrypoint):
         target = logic.OFF if held else desired
 
         # Poll Shelly first, command only if it differs.
+        run["plug"] = None  # marks Shelly as called, even if this call fails
         actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
         run["plug"] = actual
         if actual is None:

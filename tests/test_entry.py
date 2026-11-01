@@ -193,6 +193,41 @@ class ProductionHoldTest(EntryTestCase):
         self.assertEqual(self.switched, [logic.ON])
 
 
+class ConfigCheckTest(EntryTestCase):
+    async def test_on_voltage_below_off_voltage_is_a_config_error(self):
+        worker = self.worker()
+        worker.env.ON_VOLTAGE, worker.env.OFF_VOLTAGE = "200", "205"
+        with self.assertRaises(entry.ConfigError):
+            await worker.check({}, [], {})
+        self.assertEqual(self.switched, [])
+
+    async def test_a_button_press_with_bad_config_still_gets_a_reply(self):
+        worker = self.worker({entry.MODE_KEY: logic.OFF}, plug=logic.ON)
+        worker.env.SHELLY_HOST = "evil.example.com"
+        for action in (logic.ON, logic.OFF):
+            self.assertEqual(await worker.apply_control(action, {}), bot.CONFIG_FAILED_MESSAGE)
+        self.assertEqual(self.switched, [])
+        self.assertEqual(worker.env.STATE.data[entry.MODE_KEY], logic.OFF)  # nothing changed
+
+    async def test_corrupted_offset_does_not_stop_polling(self):
+        worker = self.worker({entry.OFFSET_KEY: "garbage"})
+        worker.env.TELEGRAM_BOT_TOKEN = "123456789:" + "A" * 35
+        worker.env.TELEGRAM_CHAT_ID = "-100"
+        worker.telegram = mock.AsyncMock(return_value=(True, {"ok": True, "result": [{"update_id": 9}]}))
+        self.assertIsNone(await worker.answer_commands({}))
+        self.assertNotIn("offset", worker.telegram.await_args.args[1])
+        self.assertEqual(worker.env.STATE.data[entry.OFFSET_KEY], "10")
+
+
+class ShellyPacingTest(EntryTestCase):
+    async def test_a_failed_shelly_call_still_counts_for_pacing(self):
+        worker = self.worker({entry.VERIFY_OFF_KEY: "1", entry.MODE_KEY: logic.OFF})
+        worker.shelly = mock.AsyncMock(side_effect=logic.ApiError("Shelly down"))
+        run = {}
+        await worker.enforce_hold(SECRETS, 0, run)
+        self.assertIn("plug", run)  # so a status reply this run waits before calling again
+
+
 class DeyeLoginBackoffTest(EntryTestCase):
     async def login(self, status, data):
         worker = self.worker()
