@@ -95,6 +95,30 @@ class GridVoltageTest(unittest.TestCase):
         self.assertEqual(logic.grid_voltage(deye(collected=(NOW - 60) * 1000), SN, NOW), 223.2)
 
 
+class OddDeyeResponseTest(unittest.TestCase):
+    """Malformed responses read as "no data" (so the blind alert still runs), never crash."""
+
+    def test_non_dict_entries_are_skipped(self):
+        data = deye()
+        data["deviceDataList"].insert(0, None)
+        data["deviceDataList"][1]["dataList"].insert(0, "junk")
+        self.assertEqual(logic.grid_voltage(data, SN, NOW), 223.2)
+
+    def test_odd_containers_are_no_data(self):
+        for devices in ({"deviceSn": SN}, "x", [None]):
+            data = deye()
+            data["deviceDataList"] = devices
+            self.assertEqual(logic.reading_problem(data, SN, NOW)[0], "missing")
+        data = deye()
+        data["deviceDataList"][0]["dataList"] = {"key": "GridVoltageL1L2"}
+        self.assertEqual(logic.reading_problem(data, SN, NOW)[0], "no_value")
+
+    def test_non_finite_values_are_no_value(self):
+        for value in ("NaN", "inf", "-inf"):
+            self.assertIsNone(logic.grid_voltage(deye(value), SN, NOW))
+            self.assertEqual(logic.reading_problem(deye(value), SN, NOW)[0], "no_value")
+
+
 class HysteresisTest(unittest.TestCase):
     def test_thresholds(self):
         self.assertEqual(logic.desired_state(210.0, None), logic.ON)
@@ -156,6 +180,24 @@ class PlugStateTest(unittest.TestCase):
         broken = copy.deepcopy(shelly())
         del broken["data"]["device_status"]["switch:0"]["output"]
         self.assertIsNone(logic.plug_state(broken))
+
+
+class OddShellyResponseTest(unittest.TestCase):
+    def test_odd_shapes_are_unknown_not_a_crash(self):
+        bodies = [
+            {"isok": True, "data": ["x"]},
+            {"isok": True, "data": {"online": True, "device_status": "x"}},
+            {"isok": True, "data": {"online": True, "device_status": {"relays": [None], "meters": [7]}}},
+            {"isok": True, "data": {"online": True, "device_status": {"switch:0": "on"}}},
+        ]
+        for data in bodies:
+            self.assertIsNone(logic.plug_state(data))
+            self.assertIsNone(logic.plug_power(data))
+
+    def test_non_finite_power_is_unknown(self):
+        data = shelly(True)
+        data["data"]["device_status"]["switch:0"]["apower"] = float("nan")
+        self.assertIsNone(logic.plug_power(data))
 
 
 class ShellyHostTest(unittest.TestCase):
