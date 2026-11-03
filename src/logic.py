@@ -195,15 +195,53 @@ def _channel_status(data, channel):
     return _dict(status.get(f"switch:{channel}")), gen1("relays"), gen1("meters")
 
 
-def desired_state(voltage, previous, on_at=210.0, off_below=205.0):
-    """Hysteresis: ON at >= on_at, OFF below off_below, otherwise keep previous (may be None)."""
+# Below this the grid is gone; at or above it the grid is present (maybe out of range).
+GRID_LOST_BELOW = 100.0
+
+
+def grid_condition(voltage, off_below=205.0, high_off=253.0):
+    """None (no reading), "lost", "low" (present, below OFF_VOLTAGE), "high" (present,
+    above HIGH_OFF_VOLTAGE) or "ok". "low" and "high" are when the inverter may have
+    opened its grid relay and runs the house from the battery."""
     if voltage is None:
         return None
-    if voltage >= on_at:
-        return ON
+    if voltage < GRID_LOST_BELOW:
+        return "lost"
     if voltage < off_below:
+        return "low"
+    if voltage > high_off:
+        return "high"
+    return "ok"
+
+
+def desired_state(voltage, previous, on_at=210.0, off_below=205.0, high_on=250.0, high_off=253.0):
+    """Hysteresis on both sides: OFF below off_below or above high_off, ON within
+    [on_at, high_on], otherwise keep previous (may be None)."""
+    if voltage is None:
+        return None
+    if voltage < off_below or voltage > high_off:
         return OFF
+    if on_at <= voltage <= high_on:
+        return ON
     return previous
+
+
+def parse_time(text):
+    """Epoch seconds saved in KV as text, or None when missing or garbage."""
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def cooldown_left(since, now, cooldown_seconds):
+    """Seconds the voltage must still stay in range before the boiler may switch back
+    on after a voltage switch-off (0: it may now). since: when the voltage came back
+    in range, or None when that wasn't recorded yet (the wait starts now)."""
+    if since is None:
+        return float(cooldown_seconds)
+    return min(max(cooldown_seconds - (now - since), 0.0), float(cooldown_seconds))
 
 
 def plug_state(data, channel=0):

@@ -17,10 +17,17 @@ Every minute:
      than `MAX_DATA_AGE_SECONDS`, do nothing. The plug keeps its current state.
    - Only the grid key is used: `LoadVoltage*`/`ACVoltage*` are the inverter's own
      output and stay at ~230 V on battery.
-2. Compute the desired plug state with hysteresis:
-   - `>= ON_VOLTAGE` (210 V) → on
-   - `< OFF_VOLTAGE` (205 V) → off
+2. Compute the desired plug state with hysteresis on both sides:
+   - `ON_VOLTAGE` (210 V) to `HIGH_ON_VOLTAGE` (250 V) → on
+   - `< OFF_VOLTAGE` (205 V) or `> HIGH_OFF_VOLTAGE` (253 V) → off. Grid can be present
+     while the inverter has opened its grid relay because the voltage is out of its
+     range and runs the house from the battery; set `HIGH_OFF_VOLTAGE` to the
+     inverter's own over-voltage limit.
    - in between → keep the previous desired state
+   - after a switch-off for low or high voltage (grid present, 100 V or more), the
+     boiler switches back on only once the voltage has stayed in the "on" range for
+     `VOLTAGE_COOLDOWN_SECONDS` (600 s); any dip restarts the wait. After a plain
+     outage it switches on at once.
 3. If the desired state is unchanged since the last run, stop. No Shelly call
    (except for 3 minutes after an admin's manual off, see
    [`/boiler`](#controlling-the-boiler-boiler-admin-only)).
@@ -44,8 +51,9 @@ expires or is rejected.
   are refused before any request is made, with a test for each.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
   KV (`STATE`) holds only the derived Deye token, a login back-off flag, the
-  `on`/`off` state, the admin's manual-off flags, notification dedup state and
-  Telegram bookkeeping (update offset, webhook replay guard, cooldowns).
+  `on`/`off` state, the voltage-cooldown start time, the admin's manual-off flags,
+  notification dedup state and Telegram bookkeeping (update offset, webhook replay
+  guard, cooldowns).
 - The only HTTP surface is the optional Telegram webhook (see below). Without
   `TELEGRAM_WEBHOOK_SECRET` every request gets a 404; preview URLs are off.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
@@ -116,9 +124,9 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
 - grid is lost and the boiler is switched off, and when grid returns and it's back on
   (saying how long the outage lasted);
-- grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) and the boiler is switched off,
-  and when it recovers to `ON_VOLTAGE`, with how long it lasted (below 100 V counts as an
-  outage, not low voltage);
+- grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) or rises above
+  `HIGH_OFF_VOLTAGE` and the boiler is switched off, and when it switches back on after
+  the cooldown, with how long it lasted (below 100 V counts as an outage, not low voltage);
 - Deye has given no trustworthy data for 5 minutes (protection paused), with the likely
   cause (Deye unreachable, inverter offline, stale upload, ...), and on recovery with how
   long the gap lasted. Every such run also logs the exact cause, e.g.
@@ -149,7 +157,9 @@ Send `/status` in the chat and the bot replies within a minute (within seconds i
 [webhook mode](#instant-replies-telegram-webhook-optional)) with
 grid voltage, the boiler's real on/off state, its live power draw, battery charge,
 the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`)
-and whether protection is active. `/start` or `/help` explain what it does.
+and whether protection is active. When grid is present but its voltage is out of
+range, it says so (the inverter may be running the house from the battery), and
+during the voltage cooldown it says roughly when the boiler will switch back on. `/start` or `/help` explain what it does.
 
 The power line tells whether the boiler is actually heating: from 20 W up it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is

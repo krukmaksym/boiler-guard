@@ -27,6 +27,13 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
+# Above HIGH_OFF_VOLTAGE the inverter may open its grid relay (set it to the inverter's
+# own over-voltage limit); the boiler switches back on at HIGH_ON_VOLTAGE or below.
+HIGH_ON_VOLTAGE = "250"
+HIGH_OFF_VOLTAGE = "253"
+# After a switch-off for low/high voltage, the voltage must stay in range this long
+# before the boiler switches back on (0 = no wait).
+VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
 SHELLY_CHANNEL = "0"
 
@@ -65,6 +72,13 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
+# Above HIGH_OFF_VOLTAGE the inverter may open its grid relay (set it to the inverter's
+# own over-voltage limit); the boiler switches back on at HIGH_ON_VOLTAGE or below.
+HIGH_ON_VOLTAGE = "250"
+HIGH_OFF_VOLTAGE = "253"
+# After a switch-off for low/high voltage, the voltage must stay in range this long
+# before the boiler switches back on (0 = no wait).
+VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
 SHELLY_CHANNEL = "0"
 

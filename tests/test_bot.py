@@ -189,6 +189,20 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("Ручний режим", bot.status_message(226.0, "off", 80.0, manual_off=True))
         self.assertNotIn("Ручний режим", bot.status_message(226.0, "on", 80.0))
 
+    def test_low_and_high_voltage_with_grid_present(self):
+        low = bot.status_message(190.0, "off", 80.0)
+        self.assertIn("Світло є, але напруга занизька: 190 В (поріг 205 В)", low)
+        self.assertIn("Інвертор може відключитися від мережі", low)
+        high = bot.status_message(258.0, "off", 80.0)
+        self.assertIn("Світло є, але напруга зависока: 258 В (поріг 253 В)", high)
+        self.assertNotIn("відключитися", bot.status_message(230.0, "on", 80.0))
+
+    def test_cooldown_line(self):
+        text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)
+        self.assertIn("бойлер увімкнеться за ~5 хв", text)
+        self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, wait_seconds=0))
+        self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, manual_off=True, wait_seconds=290))
+
 
 if __name__ == "__main__":
     unittest.main()

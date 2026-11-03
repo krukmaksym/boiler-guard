@@ -8,6 +8,8 @@ in the chat; the boiler on/off buttons work only for Telegram user IDs listed in
 TELEGRAM_ADMIN_IDS.
 """
 
+import logic
+
 STATUS = "/status"
 BOILER = "/boiler"
 HELP_COMMANDS = frozenset({"/start", "/help"})
@@ -201,14 +203,33 @@ def power_line(watts):
     return f"⚡️ Потужність: {watts:.0f} Вт (вода нагріта)"
 
 
-def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=None, load=None):
+def status_message(
+    voltage,
+    plug,
+    soc,
+    off_below=205.0,
+    manual_off=False,
+    power=None,
+    load=None,
+    high_off=253.0,
+    wait_seconds=None,
+):
+    """wait_seconds: how long the voltage must still stay in range before the boiler
+    switches back on after a voltage switch-off (None or 0: not waiting)."""
     lines = ["📊 Поточний стан"]
-    if voltage is None:
+    condition = logic.grid_condition(voltage, off_below, high_off)
+    if condition is None:
         lines.append("❔ Немає свіжих даних від інвертора Deye")
-    elif voltage >= off_below:
-        lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
-    else:
+    elif condition == "lost":
         lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
+    elif condition == "low":
+        lines.append(f"📉 Світло є, але напруга занизька: {voltage:.0f} В (поріг {off_below:.0f} В)")
+        lines.append("🔋 Інвертор може відключитися від мережі й живити дім від батареї")
+    elif condition == "high":
+        lines.append(f"📈 Світло є, але напруга зависока: {voltage:.0f} В (поріг {high_off:.0f} В)")
+        lines.append("🔋 Інвертор може відключитися від мережі й живити дім від батареї")
+    else:
+        lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
     if plug == "on":
         lines.append("🔥 Бойлер увімкнений")
         if power is not None:
@@ -219,6 +240,9 @@ def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=
         lines.append("❔ Стан бойлера невідомий (розетка Shelly не відповідає)")
     if manual_off:
         lines.append("✋ Ручний режим: бойлер вимкнено адміністратором")
+    elif wait_seconds and plug != "on":
+        minutes = max(round(wait_seconds / 60), 1)
+        lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
     if soc is not None:
         lines.append(f"🔋 Батарея {soc:.0f}%")
     if load is not None:

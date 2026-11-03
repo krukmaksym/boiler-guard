@@ -7,13 +7,13 @@ run costs one KV read and writes only when something changes.
 import re
 from urllib.parse import urlparse
 
+import logic
+
 TELEGRAM_API = "https://api.telegram.org"
 _TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
 BLIND_AFTER_SECONDS = 5 * 60
 ERROR_REPEAT_SECONDS = 60 * 60  # the same error is re-sent at most hourly
-# Below this the grid is gone; between this and OFF_VOLTAGE it is present but too low.
-GRID_LOST_BELOW = 100.0
 
 
 class NotifyError(Exception):
@@ -73,20 +73,42 @@ def grid_message(desired, voltage, switched, held=False, lasted=None):
     return f"✅ Світло повернулося (мережа {_v(voltage)}).{gap} {tail}"
 
 
-def low_voltage_message(voltage, switched, off_below, on_at):
+INVERTER_ISLAND_NOTE = "Інвертор може відключитися від мережі й живити дім від батареї."
+
+
+def _cooldown_tail(cooldown_minutes):
+    return f" і протримається {cooldown_minutes} хв" if cooldown_minutes else ""
+
+
+def low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes=0):
     """Grid is present but below OFF_VOLTAGE. One decimal: 204.6 V must not read as 205 V."""
-    head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В)."
+    head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В). {INVERTER_ISLAND_NOTE}"
     if not switched:
         return f"{head} Бойлер уже був вимкнений."
-    return f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В."
+    return (
+        f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В"
+        f"{_cooldown_tail(cooldown_minutes)}."
+    )
 
 
-def voltage_restored_message(voltage, switched, held=False, lasted=None):
+def high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes=0):
+    """Grid is present but above HIGH_OFF_VOLTAGE."""
+    head = f"📈 Висока напруга в мережі: {voltage:.1f} В (поріг {high_off:.0f} В). {INVERTER_ISLAND_NOTE}"
+    if not switched:
+        return f"{head} Бойлер уже був вимкнений."
+    return (
+        f"{head} Бойлер вимкнено; він увімкнеться, коли напруга опуститься до {high_on:.0f} В"
+        f"{_cooldown_tail(cooldown_minutes)}."
+    )
+
+
+def voltage_restored_message(voltage, switched, held=False, lasted=None, high=False):
     if held:
         tail = "Бойлер лишається вимкненим: його вимкнули вручну."
     else:
         tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
-    gap = f" Низька напруга трималася {duration_text(lasted)}." if lasted is not None else ""
+    kind = "Висока" if high else "Низька"
+    gap = f" {kind} напруга трималася {duration_text(lasted)}." if lasted is not None else ""
     return f"✅ Напруга в мережі відновилася ({voltage:.1f} В).{gap} {tail}"
 
 
@@ -196,34 +218,50 @@ def on_resumed(state):
 
 
 def on_switched(
-    state, previous, desired, voltage, switched, held=False, off_below=205.0, on_at=210.0, now=None
+    state,
+    previous,
+    desired,
+    voltage,
+    switched,
+    held=False,
+    off_below=205.0,
+    on_at=210.0,
+    now=None,
+    high_off=253.0,
+    high_on=250.0,
+    cooldown_minutes=0,
 ):
     """Desired state changed and was applied. Silent on the very first run (no previous).
     held: grid is back but the admin switched the boiler off by hand, so it stays off.
-    A switch-off with grid still present (low voltage) is remembered, so the switch-on
-    after it says the voltage recovered rather than that the grid came back. The
-    switch-off time is remembered too, so the switch-on says how long it lasted."""
+    A switch-off with grid still present (voltage too low or too high) is remembered,
+    so the switch-on after it says the voltage recovered rather than that the grid
+    came back. The switch-off time is remembered too, so the switch-on says how long
+    it lasted. cooldown_minutes: how long the voltage must stay in range before the
+    boiler switches back on, named in the switch-off message."""
     state.pop("switch_failed", None)
     if desired == "off":
         if now is not None:
             state["off_since"] = now
-        low = voltage >= GRID_LOST_BELOW
-        if low:
-            state["low_voltage"] = True
-        else:
-            state.pop("low_voltage", None)
+        condition = logic.grid_condition(voltage, off_below, high_off)
+        state.pop("low_voltage", None)
+        state.pop("high_voltage", None)
+        if condition in ("low", "high"):
+            state[f"{condition}_voltage"] = True
         if previous is None:
             return None
-        if low:
-            return low_voltage_message(voltage, switched, off_below, on_at)
+        if condition == "low":
+            return low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes)
+        if condition == "high":
+            return high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes)
         return grid_message(desired, voltage, switched)
     low = state.pop("low_voltage", False)
+    high = state.pop("high_voltage", False)
     since = state.pop("off_since", None)
     if previous is None:
         return None
     lasted = now - since if now is not None and since is not None else None
-    if low:
-        return voltage_restored_message(voltage, switched, held, lasted)
+    if low or high:
+        return voltage_restored_message(voltage, switched, held, lasted, high=high)
     return grid_message(desired, voltage, switched, held, lasted)
 
 

@@ -130,8 +130,36 @@ class HysteresisTest(unittest.TestCase):
             self.assertEqual(logic.desired_state(205.0, previous), previous)
             self.assertEqual(logic.desired_state(209.9, previous), previous)
 
+    def test_high_voltage_side(self):
+        self.assertEqual(logic.desired_state(253.1, logic.ON), logic.OFF)
+        self.assertEqual(logic.desired_state(253.0, logic.ON), logic.ON)  # band keeps previous
+        self.assertEqual(logic.desired_state(251.0, logic.OFF), logic.OFF)
+        self.assertEqual(logic.desired_state(250.0, logic.OFF), logic.ON)
+
+    def test_grid_condition(self):
+        self.assertIsNone(logic.grid_condition(None))
+        self.assertEqual(logic.grid_condition(0.0), "lost")
+        self.assertEqual(logic.grid_condition(190.0), "low")
+        self.assertEqual(logic.grid_condition(230.0), "ok")
+        self.assertEqual(logic.grid_condition(253.0), "ok")
+        self.assertEqual(logic.grid_condition(253.5), "high")
+
     def test_unknown_voltage(self):
         self.assertIsNone(logic.desired_state(None, logic.ON))
+
+
+class CooldownTest(unittest.TestCase):
+    def test_cooldown_left(self):
+        self.assertEqual(logic.cooldown_left(None, NOW, 600), 600)
+        self.assertEqual(logic.cooldown_left(NOW - 120, NOW, 600), 480)
+        self.assertEqual(logic.cooldown_left(NOW - 900, NOW, 600), 0)
+        self.assertEqual(logic.cooldown_left(NOW + 999, NOW, 600), 600)  # clock skew: capped
+        self.assertEqual(logic.cooldown_left(None, NOW, 0), 0)
+
+    def test_parse_time(self):
+        self.assertEqual(logic.parse_time("1800000000.5"), 1800000000.5)
+        for bad in (None, "", "garbage", "nan", "inf"):
+            self.assertIsNone(logic.parse_time(bad))
 
 
 class PlugPowerTest(unittest.TestCase):

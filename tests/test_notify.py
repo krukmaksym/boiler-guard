@@ -86,6 +86,19 @@ class SwitchTest(unittest.TestCase):
         on = notify.on_switched(state, "off", "on", 212.0, switched=True, now=T0 + 40 * 60)
         self.assertIn("Низька напруга трималася 40 хв.", on)
 
+    def test_high_voltage_off_and_back(self):
+        state = {}
+        off = notify.on_switched(state, "on", "off", 258.4, switched=True, now=T0, cooldown_minutes=10)
+        self.assertIn("Висока напруга в мережі: 258.4 В (поріг 253 В)", off)
+        self.assertIn("опуститься до 250 В і протримається 10 хв", off)
+        on = notify.on_switched(state, "off", "on", 240.0, switched=True, now=T0 + 30 * 60)
+        self.assertIn("Висока напруга трималася 30 хв.", on)
+        self.assertEqual(state, {})
+
+    def test_low_voltage_names_the_cooldown(self):
+        off = notify.on_switched({}, "on", "off", 190.0, switched=True, cooldown_minutes=10)
+        self.assertIn("підніметься до 210 В і протримається 10 хв", off)
+
     def test_no_length_when_switch_off_time_unknown(self):
         # e.g. the switch-off happened before this was deployed
         on = notify.on_switched({}, "off", "on", 226.0, switched=True, now=T0)
