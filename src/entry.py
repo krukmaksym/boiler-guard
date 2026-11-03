@@ -233,8 +233,8 @@ class Default(WorkerEntrypoint):
         values = {
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
             "on_at": float(self.var("ON_VOLTAGE", "210")),
-            "high_on": float(self.var("HIGH_ON_VOLTAGE", "250")),
-            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "253")),
+            "high_on": float(self.var("HIGH_ON_VOLTAGE", "255")),
+            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
         }
         if not values["on_at"] >= values["off_below"]:  # also refuses NaN
             raise ConfigError("ON_VOLTAGE must not be below OFF_VOLTAGE")
@@ -554,7 +554,7 @@ class Default(WorkerEntrypoint):
             "soc": run.get("soc"),
             "load": run.get("load"),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
-            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "253")),
+            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
             "manual_off": await self.held_off(),
             "power": power,
             "wait_seconds": await self.cooldown_remaining(),

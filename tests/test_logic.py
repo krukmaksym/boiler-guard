@@ -131,18 +131,18 @@ class HysteresisTest(unittest.TestCase):
             self.assertEqual(logic.desired_state(209.9, previous), previous)
 
     def test_high_voltage_side(self):
-        self.assertEqual(logic.desired_state(253.1, logic.ON), logic.OFF)
-        self.assertEqual(logic.desired_state(253.0, logic.ON), logic.ON)  # band keeps previous
-        self.assertEqual(logic.desired_state(251.0, logic.OFF), logic.OFF)
-        self.assertEqual(logic.desired_state(250.0, logic.OFF), logic.ON)
+        self.assertEqual(logic.desired_state(265.1, logic.ON), logic.OFF)
+        self.assertEqual(logic.desired_state(265.0, logic.ON), logic.ON)  # band keeps previous
+        self.assertEqual(logic.desired_state(256.0, logic.OFF), logic.OFF)
+        self.assertEqual(logic.desired_state(255.0, logic.OFF), logic.ON)
 
     def test_grid_condition(self):
         self.assertIsNone(logic.grid_condition(None))
         self.assertEqual(logic.grid_condition(0.0), "lost")
         self.assertEqual(logic.grid_condition(190.0), "low")
         self.assertEqual(logic.grid_condition(230.0), "ok")
-        self.assertEqual(logic.grid_condition(253.0), "ok")
-        self.assertEqual(logic.grid_condition(253.5), "high")
+        self.assertEqual(logic.grid_condition(265.0), "ok")
+        self.assertEqual(logic.grid_condition(265.5), "high")
 
     def test_unknown_voltage(self):
         self.assertIsNone(logic.desired_state(None, logic.ON))

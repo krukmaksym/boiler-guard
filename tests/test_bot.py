@@ -193,8 +193,8 @@ class StatusMessageTest(unittest.TestCase):
         low = bot.status_message(190.0, "off", 80.0)
         self.assertIn("Світло є, але напруга занизька: 190 В (поріг 205 В)", low)
         self.assertIn("Інвертор може відключитися від мережі", low)
-        high = bot.status_message(258.0, "off", 80.0)
-        self.assertIn("Світло є, але напруга зависока: 258 В (поріг 253 В)", high)
+        high = bot.status_message(268.0, "off", 80.0)
+        self.assertIn("Світло є, але напруга зависока: 268 В (поріг 265 В)", high)
         self.assertNotIn("відключитися", bot.status_message(230.0, "on", 80.0))
 
     def test_cooldown_line(self):

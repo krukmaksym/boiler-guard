@@ -18,11 +18,12 @@ Every minute:
    - Only the grid key is used: `LoadVoltage*`/`ACVoltage*` are the inverter's own
      output and stay at ~230 V on battery.
 2. Compute the desired plug state with hysteresis on both sides:
-   - `ON_VOLTAGE` (210 V) to `HIGH_ON_VOLTAGE` (250 V) → on
-   - `< OFF_VOLTAGE` (205 V) or `> HIGH_OFF_VOLTAGE` (253 V) → off. Grid can be present
+   - `ON_VOLTAGE` (210 V) to `HIGH_ON_VOLTAGE` (255 V) → on
+   - `< OFF_VOLTAGE` (205 V) or `> HIGH_OFF_VOLTAGE` (265 V) → off. Grid can be present
      while the inverter has opened its grid relay because the voltage is out of its
-     range and runs the house from the battery; set `HIGH_OFF_VOLTAGE` to the
-     inverter's own over-voltage limit.
+     range and runs the house from the battery. Set `HIGH_OFF_VOLTAGE` to the
+     inverter's "Grid V High (Normal)" and `HIGH_ON_VOLTAGE` to "Grid V High
+     (Reconnect)"; keep `OFF_VOLTAGE`/`ON_VOLTAGE` at or above its low limits.
    - in between → keep the previous desired state
    - after any switch-off, the boiler switches back on only once the voltage has
      stayed in the "on" range for `VOLTAGE_COOLDOWN_SECONDS` (600 s); any dip restarts

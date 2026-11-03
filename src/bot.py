@@ -211,7 +211,7 @@ def status_message(
     manual_off=False,
     power=None,
     load=None,
-    high_off=253.0,
+    high_off=265.0,
     wait_seconds=None,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler

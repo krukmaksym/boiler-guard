@@ -27,10 +27,11 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
-# Above HIGH_OFF_VOLTAGE the inverter may open its grid relay (set it to the inverter's
-# own over-voltage limit); the boiler switches back on at HIGH_ON_VOLTAGE or below.
-HIGH_ON_VOLTAGE = "250"
-HIGH_OFF_VOLTAGE = "253"
+# The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
+# its grid relay, and reconnects only at HIGH_ON_VOLTAGE ("Grid V High (Reconnect)") or
+# below; the boiler follows. OFF_VOLTAGE/ON_VOLTAGE are stricter than its low limits.
+HIGH_ON_VOLTAGE = "255"
+HIGH_OFF_VOLTAGE = "265"
 # After any switch-off (outage or low/high voltage), the voltage must stay in range this long
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
@@ -72,10 +73,11 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
-# Above HIGH_OFF_VOLTAGE the inverter may open its grid relay (set it to the inverter's
-# own over-voltage limit); the boiler switches back on at HIGH_ON_VOLTAGE or below.
-HIGH_ON_VOLTAGE = "250"
-HIGH_OFF_VOLTAGE = "253"
+# The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
+# its grid relay, and reconnects only at HIGH_ON_VOLTAGE ("Grid V High (Reconnect)") or
+# below; the boiler follows. OFF_VOLTAGE/ON_VOLTAGE are stricter than its low limits.
+HIGH_ON_VOLTAGE = "255"
+HIGH_OFF_VOLTAGE = "265"
 # After any switch-off (outage or low/high voltage), the voltage must stay in range this long
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"

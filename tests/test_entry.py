@@ -243,7 +243,7 @@ class VoltageCooldownTest(EntryTestCase):
         self.assertEqual(self.switched, [logic.OFF, logic.ON])
 
     async def test_high_voltage_switches_off_and_waits_too(self):
-        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=258.0)
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=268.0)
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [logic.OFF])
@@ -315,7 +315,7 @@ class ConfigCheckTest(EntryTestCase):
         self.assertEqual(self.switched, [])
 
     async def test_high_thresholds_out_of_order_are_a_config_error(self):
-        for high_on, high_off in (("252", "250"), ("209", "253")):
+        for high_on, high_off in (("252", "250"), ("209", "265")):
             worker = self.worker()
             worker.env.HIGH_ON_VOLTAGE, worker.env.HIGH_OFF_VOLTAGE = high_on, high_off
             with self.assertRaises(entry.ConfigError):

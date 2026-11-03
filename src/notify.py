@@ -238,8 +238,8 @@ def on_switched(
     off_below=205.0,
     on_at=210.0,
     now=None,
-    high_off=253.0,
-    high_on=250.0,
+    high_off=265.0,
+    high_on=255.0,
     cooldown_minutes=0,
     back_since=None,
 ):

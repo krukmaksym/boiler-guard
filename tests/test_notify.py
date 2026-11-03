@@ -88,9 +88,9 @@ class SwitchTest(unittest.TestCase):
 
     def test_high_voltage_off_and_back(self):
         state = {}
-        off = notify.on_switched(state, "on", "off", 258.4, switched=True, now=T0, cooldown_minutes=10)
-        self.assertIn("Висока напруга в мережі: 258.4 В (поріг 253 В)", off)
-        self.assertIn("опуститься до 250 В і протримається 10 хв", off)
+        off = notify.on_switched(state, "on", "off", 268.4, switched=True, now=T0, cooldown_minutes=10)
+        self.assertIn("Висока напруга в мережі: 268.4 В (поріг 265 В)", off)
+        self.assertIn("опуститься до 255 В і протримається 10 хв", off)
         on = notify.on_switched(state, "off", "on", 240.0, switched=True, now=T0 + 30 * 60)
         self.assertIn("Висока напруга трималася 30 хв.", on)
         self.assertEqual(state, {})

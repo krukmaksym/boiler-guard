@@ -199,7 +199,7 @@ def _channel_status(data, channel):
 GRID_LOST_BELOW = 100.0
 
 
-def grid_condition(voltage, off_below=205.0, high_off=253.0):
+def grid_condition(voltage, off_below=205.0, high_off=265.0):
     """None (no reading), "lost", "low" (present, below OFF_VOLTAGE), "high" (present,
     above HIGH_OFF_VOLTAGE) or "ok". "low" and "high" are when the inverter may have
     opened its grid relay and runs the house from the battery."""
@@ -214,7 +214,7 @@ def grid_condition(voltage, off_below=205.0, high_off=253.0):
     return "ok"
 
 
-def desired_state(voltage, previous, on_at=210.0, off_below=205.0, high_on=250.0, high_off=253.0):
+def desired_state(voltage, previous, on_at=210.0, off_below=205.0, high_on=255.0, high_off=265.0):
     """Hysteresis on both sides: OFF below off_below or above high_off, ON within
     [on_at, high_on], otherwise keep previous (may be None)."""
     if voltage is None:
