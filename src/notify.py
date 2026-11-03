@@ -81,8 +81,7 @@ def grid_message(desired, voltage, switched, held=False, lasted=None, cooldown_m
             )
         else:
             tail = "Бойлер уже був вимкнений."
-        cause = "або інвертор відключився від мережі через аномальну напругу"
-        return f"⚡️ Зникло світло (мережа {_v(voltage)}) {cause}. {tail}"
+        return f"⚡️ Зникло світло (мережа {_v(voltage)}). {tail}"
     tail = _on_tail(switched, held, waited)
     gap = f" Світла не було {duration_text(lasted)}." if lasted is not None else ""
     return f"✅ Світло повернулося (мережа {_v(voltage)}).{gap} {tail}"

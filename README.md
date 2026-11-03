@@ -26,8 +26,8 @@ Every minute:
    - in between → keep the previous desired state
    - after any switch-off, the boiler switches back on only once the voltage has
      stayed in the "on" range for `VOLTAGE_COOLDOWN_SECONDS` (600 s); any dip restarts
-     the wait. This covers outages too: when the inverter cuts itself off the grid over
-     extreme voltage, Deye reports ~0 V, which looks the same as an outage.
+     the wait. This covers outages too, since a short outage and reconnect flaps the
+     boiler the same way.
 3. If the desired state is unchanged since the last run, stop. No Shelly call
    (except for 3 minutes after an admin's manual off, see
    [`/boiler`](#controlling-the-boiler-boiler-admin-only)).
@@ -122,8 +122,8 @@ Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
-- grid is lost (or the inverter cut itself off the grid) and the boiler is switched
-  off, and when it's back on after the cooldown (saying how long the outage lasted);
+- grid is lost and the boiler is switched off, and when it's back on after the
+  cooldown (saying how long the outage lasted);
 - grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) or rises above
   `HIGH_OFF_VOLTAGE` and the boiler is switched off, and when it switches back on after
   the cooldown, with how long it lasted (below 100 V counts as an outage, not low voltage);

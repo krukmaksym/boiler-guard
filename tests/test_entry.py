@@ -253,7 +253,7 @@ class VoltageCooldownTest(EntryTestCase):
         self.assertEqual(self.switched, [logic.OFF])
 
     async def test_grid_lost_waits_too(self):
-        """An inverter that cut itself off over extreme voltage reports ~0 V, like an outage."""
+        """A short outage and reconnect would flap the boiler just like low voltage."""
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=6.0)
         state, outbox = {}, []
         await worker.check(state, outbox, {})

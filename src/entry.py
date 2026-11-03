@@ -52,8 +52,8 @@ HELD_ON = "on:held"
 # Saved instead of "off" by every switch-off. Switching back on then waits until the
 # voltage has stayed in range for VOLTAGE_COOLDOWN_SECONDS, so a voltage hovering
 # around a threshold can't flip the boiler on and off every minute. This covers
-# outages too: when the inverter cuts itself off the grid over extreme voltage, Deye
-# reports ~0 V, the same as an outage. (A plain "off" is from before this existed.)
+# outages too: a short outage and reconnect flaps the same way. (A plain "off" is
+# from before this existed.)
 COOLDOWN_OFF = "off:cooldown"
 ON_PENDING_KEY = "state:on_pending"  # when the voltage came back in range (COOLDOWN_OFF only)
 MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
