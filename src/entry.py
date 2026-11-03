@@ -49,12 +49,13 @@ DESIRED_KEY = "state:desired"
 # Saved instead of "on" when grid is back but the admin holds the plug off, so once the
 # hold ends (by any path) the next run with grid sees work to do and switches on.
 HELD_ON = "on:held"
-# Saved instead of "off" when the boiler is off because grid is present but its voltage
-# is out of range (the inverter may have opened its grid relay). Switching back on then
-# waits until the voltage has stayed in range for VOLTAGE_COOLDOWN_SECONDS, so a voltage
-# hovering around a threshold can't flip the boiler on and off every minute.
-VOLTAGE_OFF = "off:voltage"
-ON_PENDING_KEY = "state:on_pending"  # when the voltage came back in range (VOLTAGE_OFF only)
+# Saved instead of "off" by every switch-off. Switching back on then waits until the
+# voltage has stayed in range for VOLTAGE_COOLDOWN_SECONDS, so a voltage hovering
+# around a threshold can't flip the boiler on and off every minute. This covers
+# outages too: when the inverter cuts itself off the grid over extreme voltage, Deye
+# reports ~0 V, the same as an outage. (A plain "off" is from before this existed.)
+COOLDOWN_OFF = "off:cooldown"
+ON_PENDING_KEY = "state:on_pending"  # when the voltage came back in range (COOLDOWN_OFF only)
 MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
 # Set for a few minutes after the admin presses ⛔: the cron then checks the plug really
 # stayed off (a switch-on racing the press, or reading a not-yet-visible mode from KV,
@@ -274,19 +275,9 @@ class Default(WorkerEntrypoint):
 
     async def saved_desired(self):
         """(raw KV value, desired state it stands for): HELD_ON counts as "on",
-        VOLTAGE_OFF as "off"."""
+        COOLDOWN_OFF as "off"."""
         saved = await self.kv_get(DESIRED_KEY)
-        return saved, {HELD_ON: logic.ON, VOLTAGE_OFF: logic.OFF}.get(saved, saved)
-
-    async def voltage_settled(self, now):
-        """After a voltage switch-off, with the voltage back in range: True once it has
-        stayed there for the cooldown. The first such run records the time."""
-        since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
-        if logic.cooldown_left(since, now, self.cooldown_seconds()) <= 0:
-            return True
-        if since is None:
-            await self.kv_put(ON_PENDING_KEY, str(now))
-        return False
+        return saved, {HELD_ON: logic.ON, COOLDOWN_OFF: logic.OFF}.get(saved, saved)
 
     async def clear_on_pending(self):
         """The voltage left the range again (or the boiler is back on): the wait restarts."""
@@ -572,7 +563,7 @@ class Default(WorkerEntrypoint):
     async def cooldown_remaining(self):
         """Seconds until a voltage switch-off may end (the voltage is back in range and
         has to stay there), or None when the boiler isn't waiting for that."""
-        if (await self.saved_desired())[0] != VOLTAGE_OFF:
+        if (await self.saved_desired())[0] != COOLDOWN_OFF:
             return None
         since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
         if since is None:
@@ -657,7 +648,7 @@ class Default(WorkerEntrypoint):
                 await self.kv_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
         else:
             await self.env.STATE.delete(MODE_KEY)
-            if target == logic.ON and (await self.saved_desired())[0] == VOLTAGE_OFF:
+            if target == logic.ON and (await self.saved_desired())[0] == COOLDOWN_OFF:
                 # The admin switched on during the voltage cooldown: that ends it.
                 await self.kv_put(DESIRED_KEY, logic.ON)
                 await self.clear_on_pending()
@@ -718,16 +709,20 @@ class Default(WorkerEntrypoint):
         saved, previous = await self.saved_desired()
         desired = logic.desired_state(voltage, previous, **thresholds)
         run["desired"] = desired
-        condition = logic.grid_condition(voltage, thresholds["off_below"], thresholds["high_off"])
-        if desired == logic.ON and saved == VOLTAGE_OFF and not await self.voltage_settled(time.time()):
-            log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
-            await self.enforce_hold(secrets, channel, run)
-            return
-        if desired == logic.OFF and saved == VOLTAGE_OFF:
+        back_since = None  # when the voltage came back in range after a switch-off
+        if desired == logic.ON and saved == COOLDOWN_OFF:
+            now = time.time()
+            back_since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
+            if logic.cooldown_left(back_since, now, cooldown) > 0:
+                if back_since is None:
+                    await self.kv_put(ON_PENDING_KEY, str(now))
+                log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
+                await self.enforce_hold(secrets, channel, run)
+                return
+        if desired == logic.OFF and saved == COOLDOWN_OFF:
             await self.clear_on_pending()
-        elif desired == logic.OFF and saved == logic.OFF and condition in ("low", "high"):
-            # Grid came back after an outage, but out of range: the cooldown applies too.
-            await self.kv_put(DESIRED_KEY, VOLTAGE_OFF)
+        elif desired == logic.OFF and saved == logic.OFF:
+            await self.kv_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.
         resume = saved == HELD_ON and desired == logic.ON and not await self.held_off()
         if desired is None or (desired == previous and not resume):
@@ -764,11 +759,9 @@ class Default(WorkerEntrypoint):
 
         if held:
             await self.kv_put(DESIRED_KEY, HELD_ON)
-        elif desired == logic.OFF and condition in ("low", "high"):
-            await self.kv_put(DESIRED_KEY, VOLTAGE_OFF)
         else:
-            await self.kv_put(DESIRED_KEY, desired)
-        if saved == VOLTAGE_OFF and desired == logic.ON:
+            await self.kv_put(DESIRED_KEY, COOLDOWN_OFF if desired == logic.OFF else desired)
+        if saved == COOLDOWN_OFF and desired == logic.ON:
             await self.clear_on_pending()
         if resume:
             notify.on_resumed(state)
@@ -787,6 +780,7 @@ class Default(WorkerEntrypoint):
                 high_off=thresholds["high_off"],
                 high_on=thresholds["high_on"],
                 cooldown_minutes=round(cooldown / 60),
+                back_since=back_since,
             )
         )
 

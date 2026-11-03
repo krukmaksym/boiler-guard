@@ -31,7 +31,7 @@ OFF_VOLTAGE = "205"
 # own over-voltage limit); the boiler switches back on at HIGH_ON_VOLTAGE or below.
 HIGH_ON_VOLTAGE = "250"
 HIGH_OFF_VOLTAGE = "253"
-# After a switch-off for low/high voltage, the voltage must stay in range this long
+# After any switch-off (outage or low/high voltage), the voltage must stay in range this long
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
@@ -76,7 +76,7 @@ OFF_VOLTAGE = "205"
 # own over-voltage limit); the boiler switches back on at HIGH_ON_VOLTAGE or below.
 HIGH_ON_VOLTAGE = "250"
 HIGH_OFF_VOLTAGE = "253"
-# After a switch-off for low/high voltage, the voltage must stay in range this long
+# After any switch-off (outage or low/high voltage), the voltage must stay in range this long
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"

@@ -222,6 +222,7 @@ def status_message(
         lines.append("❔ Немає свіжих даних від інвертора Deye")
     elif condition == "lost":
         lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
+        lines.append("ℹ️ Або інвертор відключився від мережі через аномальну напругу")
     elif condition == "low":
         lines.append(f"📉 Світло є, але напруга занизька: {voltage:.0f} В (поріг {off_below:.0f} В)")
         lines.append("🔋 Інвертор може відключитися від мережі й живити дім від батареї")

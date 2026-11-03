@@ -127,7 +127,7 @@ class ManualOnTest(EntryTestCase):
         worker.deye_reading = mock.AsyncMock(return_value=(0.0, 80.0, 0.0, None))  # grid gone
         outbox = []
         await worker.check({}, outbox, {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.OFF)
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.assertEqual(len([m for m in outbox if m and "Зникло світло" in m]), 1)
 
     async def test_hold_keeps_the_plug_off_without_polling_shelly(self):
@@ -210,7 +210,7 @@ class VoltageCooldownTest(EntryTestCase):
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [logic.OFF])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.VOLTAGE_OFF)
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.assertIn("протримається 10 хв", [m for m in outbox if m][0])
         return worker
 
@@ -252,18 +252,30 @@ class VoltageCooldownTest(EntryTestCase):
         await worker.check({}, [], {})
         self.assertEqual(self.switched, [logic.OFF])
 
-    async def test_grid_lost_switches_back_on_without_waiting(self):
-        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
-        await worker.check({}, [], {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.OFF)
-        self.at(worker, 230.0, 1)
-        await worker.check({}, [], {})
+    async def test_grid_lost_waits_too(self):
+        """An inverter that cut itself off over extreme voltage reports ~0 V, like an outage."""
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=6.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertIn("протримається 10 хв", outbox[-1])
+        self.at(worker, 221.0, 1)
+        await worker.check(state, outbox, {})
+        self.assertEqual(self.switched, [logic.OFF])
+        self.at(worker, 221.0, 11)
+        await worker.check(state, outbox, {})
         self.assertEqual(self.switched, [logic.OFF, logic.ON])
+        self.assertIn("Світла не було 1 хв. Напруга стабільна вже 10 хв", outbox[-1])
+
+    async def test_an_old_plain_off_gets_the_cooldown(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF, voltage=0.0)
+        await worker.check({}, [], {})
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
 
     async def test_grid_back_but_too_low_after_an_outage_waits(self):
         worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF, voltage=190.0)
         await worker.check({}, [], {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.VOLTAGE_OFF)
+        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.at(worker, 230.0, 1)
         await worker.check({}, [], {})
         self.assertEqual(self.switched, [])
