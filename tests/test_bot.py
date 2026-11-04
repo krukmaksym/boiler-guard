@@ -197,6 +197,17 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("Світло є, але напруга зависока: 268 В (поріг 265 В)", high)
         self.assertNotIn("відключитися", bot.status_message(230.0, "on", 80.0))
 
+    def test_battery_line(self):
+        def text(soc, watts):
+            return bot.status_message(230.0, "on", soc, battery=watts)
+
+        self.assertIn("🔋 Батарея 80%, заряджається: 1200 Вт", text(80.0, -1200.4))
+        self.assertIn("🔋 Батарея 64%, розряджається: 640 Вт", text(64.0, 640.0))
+        self.assertIn("🔋 Батарея 100%, не заряджається і не розряджається", text(100.0, -5.0))
+        self.assertIn("🔋 Батарея заряджається: 300 Вт", text(None, -300.0))
+        self.assertIn("🔋 Батарея 80%\n", text(80.0, None))  # power unknown
+        self.assertNotIn("Батарея", text(None, None))
+
     def test_cooldown_line(self):
         text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)
         self.assertIn("бойлер увімкнеться за ~5 хв", text)

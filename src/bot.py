@@ -22,6 +22,7 @@ PANEL_TTL_LIVE_SECONDS = 60  # webhook: presses arrive within seconds
 POLL_DELAY_SECONDS = 60  # polling: how late a cron run may see a press
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
+BATTERY_IDLE_WATTS = 20  # battery power below this (either way) counts as neither charging nor discharging
 
 # Persistent keyboard under the input field (posted by scripts/telegram_menu.py).
 # A press posts the button's text as the user's own message. The bot needs group
@@ -203,6 +204,19 @@ def power_line(watts):
     return f"⚡️ Потужність: {watts:.0f} Вт (вода нагріта)"
 
 
+def battery_line(soc, watts):
+    """'🔋 Батарея 80%, заряджається: 1200 Вт'; either part may be unknown (None)."""
+    parts = [f"🔋 Батарея {soc:.0f}%" if soc is not None else "🔋 Батарея"]
+    if watts is not None:
+        if watts <= -BATTERY_IDLE_WATTS:
+            parts.append(f"заряджається: {-watts:.0f} Вт")
+        elif watts >= BATTERY_IDLE_WATTS:
+            parts.append(f"розряджається: {watts:.0f} Вт")
+        else:
+            parts.append("не заряджається і не розряджається")
+    return ", ".join(parts) if soc is not None else " ".join(parts)
+
+
 def status_message(
     voltage,
     plug,
@@ -213,9 +227,11 @@ def status_message(
     load=None,
     high_off=265.0,
     wait_seconds=None,
+    battery=None,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler
-    switches back on after a voltage switch-off (None or 0: not waiting)."""
+    switches back on after a voltage switch-off (None or 0: not waiting). battery:
+    battery power in W, Deye's sign (negative while charging)."""
     lines = ["📊 Поточний стан"]
     condition = logic.grid_condition(voltage, off_below, high_off)
     if condition is None:
@@ -243,8 +259,8 @@ def status_message(
     elif wait_seconds and plug != "on":
         minutes = max(round(wait_seconds / 60), 1)
         lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
-    if soc is not None:
-        lines.append(f"🔋 Батарея {soc:.0f}%")
+    if soc is not None or battery is not None:
+        lines.append(battery_line(soc, battery))
     if load is not None:
         lines.append(f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт")
     if voltage is None:

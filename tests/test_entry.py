@@ -84,7 +84,7 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
             return {"isok": True}
 
         worker.shelly = shelly
-        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None))
+        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None, None))
         return worker
 
 
@@ -124,7 +124,7 @@ class ManualOnTest(EntryTestCase):
 
     async def test_grid_lost_after_that_is_still_announced(self):
         worker = await self.held_with_grid_then_on_while_blind()
-        worker.deye_reading = mock.AsyncMock(return_value=(0.0, 80.0, 0.0, None))  # grid gone
+        worker.deye_reading = mock.AsyncMock(return_value=(0.0, 80.0, 0.0, None, None))  # grid gone
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
@@ -203,7 +203,7 @@ class VoltageCooldownTest(EntryTestCase):
 
     def at(self, worker, voltage, minutes):
         self.now = 1_800_000_000.0 + minutes * 60
-        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None))
+        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None, None))
 
     async def low_voltage_off(self):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=190.0)

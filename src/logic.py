@@ -107,6 +107,12 @@ def backup_load(data, sn, now, key="UPSLoadPower", max_age_seconds=180):
     return device_readings(data, sn, now, load_key=key, max_age_seconds=max_age_seconds)[2]
 
 
+def battery_power(data, sn, now, key="BatteryPower", max_age_seconds=180):
+    """Battery power (W) from the same response, or None. Deye's sign: negative while
+    charging, positive while discharging."""
+    return device_readings(data, sn, now, battery_key=key, max_age_seconds=max_age_seconds)[3]
+
+
 def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     """Why grid_voltage() gives None, as (code, log detail); None when it doesn't.
 
@@ -114,19 +120,27 @@ def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     "offline" (Deye marks the inverter offline), "stale" (no fresh upload),
     "no_value" (the voltage key is missing or not a number).
     """
-    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[3]
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[4]
 
 
 def device_readings(
-    data, sn, now, key="GridVoltageL1L2", soc_key="SOC", load_key="UPSLoadPower", max_age_seconds=180
+    data,
+    sn,
+    now,
+    key="GridVoltageL1L2",
+    soc_key="SOC",
+    load_key="UPSLoadPower",
+    battery_key="BatteryPower",
+    max_age_seconds=180,
 ):
-    """(grid voltage, battery %, backup load W, problem) from one device lookup; the
-    functions above each return one of these."""
+    """(grid voltage, battery %, backup load W, battery W, problem) from one device
+    lookup; the functions above each return one of these."""
     device, problem = _fresh_device(data, sn, now, max_age_seconds)
     voltage = _reading(device, key)
     if problem is None and voltage is None:
         problem = ("no_value", f"no {key} value")
-    return voltage, _reading(device, soc_key), _reading(device, load_key), problem
+    readings = (_reading(device, soc_key), _reading(device, load_key), _reading(device, battery_key))
+    return voltage, *readings, problem
 
 
 def _fresh_device(data, sn, now, max_age_seconds):

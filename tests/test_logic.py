@@ -343,6 +343,7 @@ class DeviceReadingsTest(unittest.TestCase):
         with_load["deviceDataList"][0]["dataList"] += [
             {"key": "SOC", "value": "87", "unit": "%"},
             {"key": "UPSLoadPower", "value": "640", "unit": "W"},
+            {"key": "BatteryPower", "value": "-1200", "unit": "W"},
         ]
         responses = [
             with_load,
@@ -359,10 +360,11 @@ class DeviceReadingsTest(unittest.TestCase):
                 logic.grid_voltage(data, SN, NOW),
                 logic.battery_soc(data, SN, NOW),
                 logic.backup_load(data, SN, NOW),
+                logic.battery_power(data, SN, NOW),
                 logic.reading_problem(data, SN, NOW),
             )
             self.assertEqual(logic.device_readings(data, SN, NOW), expected)
-        self.assertEqual(logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, None))
+        self.assertEqual(logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, -1200.0, None))
 
 
 if __name__ == "__main__":

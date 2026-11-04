@@ -157,8 +157,9 @@ For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests
 Send `/status` in the chat and the bot replies within a minute (within seconds in
 [webhook mode](#instant-replies-telegram-webhook-optional)) with
 grid voltage, the boiler's real on/off state, its live power draw, battery charge,
-the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`)
-and whether protection is active. When grid is present but its voltage is out of
+the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`),
+whether the battery is charging or discharging and at what power (`BATTERY_POWER_KEY`,
+default `BatteryPower`, negative while charging) and whether protection is active. When grid is present but its voltage is out of
 range, it says so (the inverter may be running the house from the battery), and
 during the voltage cooldown it says roughly when the boiler will switch back on. `/start` or `/help` explain what it does.
 

@@ -25,6 +25,7 @@ id = "ab7e5c69f89f42c7af5243d5de4f6c41"
 DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
+BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
 # The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
@@ -71,6 +72,7 @@ NOTIFY_PREFIX = "🧪 ТЕСТ: "
 DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
+BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
 # The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
