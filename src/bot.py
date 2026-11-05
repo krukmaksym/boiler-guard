@@ -23,6 +23,7 @@ POLL_DELAY_SECONDS = 60  # polling: how late a cron run may see a press
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
 BATTERY_IDLE_WATTS = 20  # battery power below this (either way) counts as neither charging nor discharging
+BATTERY_FULL_PERCENT = 99  # from here a trickle charge (or idle) reads as "fully charged"
 
 # Persistent keyboard under the input field (posted by scripts/telegram_menu.py).
 # A press posts the button's text as the user's own message. The bot needs group
@@ -226,10 +227,13 @@ def power_line(watts):
 
 
 def battery_line(soc, watts):
-    """'🔋 Батарея 80%, заряджається: 1200 Вт'; either part may be unknown (None)."""
+    """'🔋 Батарея 80%, заряджається: 1200 Вт'; either part may be unknown (None). A full
+    battery isn't "charging": the inverter only tops it up (Deye's app shows "Static")."""
     parts = [f"🔋 Батарея {soc:.0f}%" if soc is not None else "🔋 Батарея"]
     if watts is not None:
-        if watts <= -BATTERY_IDLE_WATTS:
+        if soc is not None and soc >= BATTERY_FULL_PERCENT and watts < BATTERY_IDLE_WATTS:
+            parts.append("повністю заряджена")
+        elif watts <= -BATTERY_IDLE_WATTS:
             parts.append(f"заряджається: {-watts:.0f} Вт")
         elif watts >= BATTERY_IDLE_WATTS:
             parts.append(f"розряджається: {watts:.0f} Вт")
