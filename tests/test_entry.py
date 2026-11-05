@@ -502,6 +502,31 @@ class PlugStateTest(EntryTestCase):
         await store.get_value(entry.DESIRED_KEY)
         self.assertNotIn(entry.MIGRATED_KEY, namespace.data)
 
+    def losing_reads(self, worker):
+        """A store whose writes succeed but whose reads come back empty."""
+        worker.env.PLUG.object.get_value = mock.AsyncMock(return_value="")
+
+    async def test_a_store_that_loses_values_fails_loudly(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        self.losing_reads(worker)
+        with self.assertRaises(logic.ApiError) as raised:
+            await worker.check({}, [], {})
+        self.assertIn("plug state not saved", str(raised.exception))
+        self.assertEqual(self.switched, [logic.OFF])  # the plug was still switched first
+        detail = entry.error_summary(raised.exception)[1]
+        self.assertIn("plug state not saved", entry.notify.error_message(detail))
+
+    async def test_a_hold_that_is_not_saved_says_so(self):
+        worker = self.worker(plug=logic.ON)
+        self.losing_reads(worker)
+        self.assertEqual(await worker.apply_control(logic.OFF, {}), bot.STATE_FAILED_MESSAGE)
+        self.assertEqual(self.switched, [logic.OFF])
+
+    async def test_a_working_store_reads_back_without_errors(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        await worker.check({}, [], {})
+        self.assertEqual(await worker.apply_control(logic.OFF, {}), bot.control_message("off", "off", False))
+
     async def test_missing_binding_is_a_config_error(self):
         worker = self.worker()
         del worker.env.PLUG

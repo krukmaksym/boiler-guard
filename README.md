@@ -60,7 +60,10 @@ expires or is rejected.
   is strongly consistent: KV can serve a value up to ~60 s old elsewhere, which could
   end the cooldown early or miss a hold. Its first call copies those values from KV
   once, and every change is still mirrored to KV (never read for these keys), so
-  rolling back to an older version starts from the current state.
+  rolling back to an older version starts from the current state. Each write of the
+  desired state or the admin's hold is read back: if the store loses values, the run
+  fails with the usual error alert (and a ⛔ press says the hold wasn't saved) instead
+  of the cooldown and the hold silently not working.
   KV (`STATE`) holds only the derived Deye token, a login back-off flag, notification
   dedup state and Telegram bookkeeping (update offset, webhook replay guard,
   cooldowns).

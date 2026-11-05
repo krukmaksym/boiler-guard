@@ -112,6 +112,10 @@ PLUG_KEYS = frozenset({DESIRED_KEY, MODE_KEY, VERIFY_OFF_KEY, ON_PENDING_KEY})
 PLUG_OBJECT_NAME = "plug"  # one object per Worker: there is one plug
 MIGRATED_KEY = "migrated_from_kv"  # set once the KV values were copied over
 EXPIRES_SUFFIX = "|expires"  # epoch seconds after which a value counts as gone
+# Read back after every write: a Durable Object read right after a write must see it,
+# so a mismatch means the store is broken. Without this a store that loses values
+# would fail silently: no cooldown, no outage alerts, and the admin's ⛔ ignored.
+READ_BACK_KEYS = frozenset({DESIRED_KEY, MODE_KEY})
 
 
 class PlugState(DurableObject):
@@ -351,8 +355,14 @@ class Default(WorkerEntrypoint):
         return value if isinstance(value, str) and value else None
 
     async def state_put(self, key, value, ttl=None):
+        """Raises logic.ApiError when a READ_BACK_KEYS value doesn't read back."""
         await self.plug().put_value(key, value, int(ttl or 0))
         await self.mirror_to_kv(key, value, ttl)
+        if key in READ_BACK_KEYS:
+            saved = await self.state_get(key)
+            if saved != str(value):
+                log(f"plug state read-back failed for {key}: got {saved!r}")
+                raise logic.ApiError(f"plug state not saved: {key} did not read back (Durable Object)")
 
     async def state_delete(self, key):
         """Deletes a plug key; True when it was set."""
@@ -771,17 +781,20 @@ class Default(WorkerEntrypoint):
             except Exception as exc:
                 log(f"admin control: Shelly failed: {type(exc).__name__}")
                 return bot.CONTROL_FAILED_MESSAGE
-        if action == logic.OFF:
-            await self.state_put(MODE_KEY, logic.OFF)
-            await self.state_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
-            if (await self.saved_desired())[0] == logic.ON:
-                await self.state_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
-        else:
-            await self.state_delete(MODE_KEY)
-            if target == logic.ON and (await self.saved_desired())[0] == COOLDOWN_OFF:
-                # The admin switched on during the voltage cooldown: that ends it.
-                await self.state_put(DESIRED_KEY, logic.ON)
-                await self.clear_on_pending()
+        try:
+            if action == logic.OFF:
+                await self.state_put(MODE_KEY, logic.OFF)
+                await self.state_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
+                if (await self.saved_desired())[0] == logic.ON:
+                    await self.state_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
+            else:
+                await self.state_delete(MODE_KEY)
+                if target == logic.ON and (await self.saved_desired())[0] == COOLDOWN_OFF:
+                    # The admin switched on during the voltage cooldown: that ends it.
+                    await self.state_put(DESIRED_KEY, logic.ON)
+                    await self.clear_on_pending()
+        except logic.ApiError:
+            return bot.STATE_FAILED_MESSAGE
         off_grid = logic.relay_open(run.get("relay")) is True
         return bot.control_message(action, target, switched, voltage=run.get("voltage"), off_grid=off_grid)
 
