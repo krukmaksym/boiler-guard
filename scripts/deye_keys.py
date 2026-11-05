@@ -1,11 +1,11 @@
-"""List every reading Deye Cloud returns for the inverter (key = value unit), and its
-battery settings (config/battery), to find key names such as the grid relay status.
+"""List every reading Deye Cloud returns for the inverter (key = value unit), to find
+key names such as the grid relay status.
 
   python3 -I scripts/deye_keys.py [.prod.vars] [filter]
 
 filter: only keys containing this text, case-insensitive (e.g. "relay").
-Read-only: logs in and calls /v1.0/device/latest and /v1.0/config/battery through
-logic.deye_url, like the Worker. Never prints credentials or the token.
+Read-only: logs in and calls /v1.0/device/latest through logic.deye_url, like the
+Worker. Never prints credentials or the token.
 """
 
 import json
@@ -78,14 +78,6 @@ def main(path=".prod.vars", wanted=""):
         key = str(item.get("key"))
         if wanted.lower() in key.lower():
             print(f"{key} = {item.get('value')} {item.get('unit') or ''}".rstrip())
-    # Battery settings (read-only), e.g. maxDischargeCurrent = the "Max A Discharge" setting.
-    _, config = post(base, "/v1.0/config/battery", {"deviceSn": sn}, token=token)
-    if not isinstance(config, dict) or not config.get("success"):
-        print(f"config/battery: not available (msg={(config or {}).get('msg')!r})")
-        return
-    for key, value in config.items():
-        if key not in ("code", "msg", "success", "requestId") and wanted.lower() in key.lower():
-            print(f"config/battery: {key} = {value}")
 
 
 if __name__ == "__main__":

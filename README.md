@@ -49,8 +49,7 @@ expires or is rejected.
   access to your station, and create the developer app under that user. Deye then
   refuses settings changes for these credentials (`auth no operation permission`).
 - **Deye is read-only in code too**: every Deye call goes through `logic.deye_url`,
-  which allows only `/v1.0/account/token`, `/v1.0/device/latest` and
-  `/v1.0/config/battery` (reads the battery settings) on
+  which allows only `/v1.0/account/token` and `/v1.0/device/latest` on
   `https://*.deyecloud.com`. All 18 endpoints in Deye's API that change settings,
   stations or accounts (`/order/*`, `/strategy/*`, logger and station management)
   are refused before any request is made, with a test for each.
@@ -164,8 +163,8 @@ Send `/status` in the chat and the bot replies within a minute (within seconds i
 [webhook mode](#instant-replies-telegram-webhook-optional)) with
 grid voltage, the boiler's real on/off state, its live power draw, battery charge,
 the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`) with
-the battery current it would need on battery alone against the inverter's "Max A
-Discharge" setting (read from Deye's read-only `/v1.0/config/battery` at most hourly),
+the battery current it would need on battery alone (load / `BatteryVoltage`, plus ~5%
+inverter losses; compare it with the inverter's "Max A Discharge" setting),
 whether the battery is charging or discharging and at what power (`BATTERY_POWER_KEY`,
 default `BatteryPower`, negative while charging) and whether protection is active. When grid is present but its voltage is out of
 range, or the inverter has disconnected itself from the grid, it says so, and
