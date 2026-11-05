@@ -122,6 +122,7 @@ class PlugState(DurableObject):
     def __init__(self, ctx, env):
         self.ctx = ctx
         self.env = env
+        self.migrated = False  # cached once storage says so
 
     @staticmethod
     def _check(key):
@@ -129,8 +130,11 @@ class PlugState(DurableObject):
             raise ValueError(f"not a plug state key: {key!r}")
 
     async def _ready(self):
+        if self.migrated:
+            return
         storage = self.ctx.storage
         if await storage.get(MIGRATED_KEY):
+            self.migrated = True
             return
         kv = getattr(self.env, "STATE", None)
         for key in sorted(PLUG_KEYS):
@@ -140,6 +144,7 @@ class PlugState(DurableObject):
                 if key == VERIFY_OFF_KEY:  # KV's TTL doesn't copy over: restart the window
                     await storage.put(key + EXPIRES_SUFFIX, time.time() + VERIFY_OFF_SECONDS)
         await storage.put(MIGRATED_KEY, "1")
+        self.migrated = True
 
     async def get_value(self, key):
         """The value, or "" when it is missing or expired."""
@@ -164,10 +169,13 @@ class PlugState(DurableObject):
             await storage.delete(key + EXPIRES_SUFFIX)
 
     async def delete_value(self, key):
+        """Deletes the value; "1" when there was one, else "" (so callers can skip work)."""
         self._check(key)
         await self._ready()
+        existed = bool(await self.ctx.storage.get(key))
         await self.ctx.storage.delete(key)
         await self.ctx.storage.delete(key + EXPIRES_SUFFIX)
+        return "1" if existed else ""
 
 
 def plug_stub(namespace):
@@ -344,9 +352,27 @@ class Default(WorkerEntrypoint):
 
     async def state_put(self, key, value, ttl=None):
         await self.plug().put_value(key, value, int(ttl or 0))
+        await self.mirror_to_kv(key, value, ttl)
 
     async def state_delete(self, key):
-        await self.plug().delete_value(key)
+        """Deletes a plug key; True when it was set."""
+        existed = bool(await self.plug().delete_value(key))
+        if existed:
+            await self.mirror_to_kv(key, None)
+        return existed
+
+    async def mirror_to_kv(self, key, value, ttl=None):
+        """Also write the change to KV, which is never read for these keys any more, so
+        that rolling back to a version that reads KV starts from the current state.
+        Best effort: the Durable Object is what counts. Changes are rare (no KV write
+        on an ordinary run). Drop this once rolling back past it is no longer needed."""
+        try:
+            if value is None:
+                await self.env.STATE.delete(key)
+            else:
+                await self.kv_put(key, value, ttl)
+        except Exception as exc:
+            log(f"KV mirror of {key} failed: {type(exc).__name__}")
 
     async def prod_held_off(self):
         """Test Worker only: True while production's admin holds the boiler off. Both
@@ -364,15 +390,14 @@ class Default(WorkerEntrypoint):
         return await self.state_get(MODE_KEY) == logic.OFF or await self.prod_held_off()
 
     async def saved_desired(self):
-        """(raw KV value, desired state it stands for): HELD_ON counts as "on",
+        """(raw saved value, desired state it stands for): HELD_ON counts as "on",
         COOLDOWN_OFF as "off"."""
         saved = await self.state_get(DESIRED_KEY)
         return saved, {HELD_ON: logic.ON, COOLDOWN_OFF: logic.OFF}.get(saved, saved)
 
     async def clear_on_pending(self):
         """The voltage left the range again (or the boiler is back on): the wait restarts."""
-        if await self.state_get(ON_PENDING_KEY):
-            await self.state_delete(ON_PENDING_KEY)
+        await self.state_delete(ON_PENDING_KEY)
 
     async def kv_put(self, key, value, ttl=None):
         if ttl:

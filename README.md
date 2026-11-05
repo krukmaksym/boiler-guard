@@ -59,7 +59,8 @@ expires or is rejected.
   switch-on cooldown) lives in the `PlugState` Durable Object (binding `PLUG`), which
   is strongly consistent: KV can serve a value up to ~60 s old elsewhere, which could
   end the cooldown early or miss a hold. Its first call copies those values from KV
-  once; KV keeps them, so rolling back to an older version still works.
+  once, and every change is still mirrored to KV (never read for these keys), so
+  rolling back to an older version starts from the current state.
   KV (`STATE`) holds only the derived Deye token, a login back-off flag, notification
   dedup state and Telegram bookkeeping (update offset, webhook replay guard,
   cooldowns).

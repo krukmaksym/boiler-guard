@@ -380,7 +380,8 @@ class PlugStateTest(EntryTestCase):
         self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.assertEqual(worker.plug_data[entry.MODE_KEY], logic.OFF)
         self.assertIn(entry.VERIFY_OFF_KEY, worker.plug_data)
-        self.assertFalse(entry.PLUG_KEYS & set(worker.env.STATE.data))  # nothing in KV
+        for key in (entry.DESIRED_KEY, entry.MODE_KEY, entry.VERIFY_OFF_KEY):  # mirrored for a rollback
+            self.assertEqual(worker.env.STATE.data[key], worker.plug_data[key])
         self.assertEqual(set(worker.env.PLUG.names), {entry.PLUG_OBJECT_NAME})
 
     async def test_first_call_copies_the_kv_values_once(self):
@@ -424,6 +425,30 @@ class PlugStateTest(EntryTestCase):
         for call in (store.get_value(entry.TOKEN_KEY), store.put_value("anything", "x")):
             with self.assertRaises(ValueError):
                 await call
+
+    async def test_kv_mirror_follows_deletes_without_extra_writes(self):
+        worker = self.worker({entry.ON_PENDING_KEY: "123"})
+        worker.env.STATE.data[entry.ON_PENDING_KEY] = "123"
+        await worker.clear_on_pending()
+        self.assertNotIn(entry.ON_PENDING_KEY, worker.plug_data)
+        self.assertNotIn(entry.ON_PENDING_KEY, worker.env.STATE.data)
+        worker.env.STATE.delete = mock.AsyncMock()
+        await worker.clear_on_pending()  # nothing to clear: no KV write
+        worker.env.STATE.delete.assert_not_awaited()
+
+    async def test_a_failed_kv_mirror_does_not_break_the_run(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        worker.env.STATE.put = mock.AsyncMock(side_effect=OSError("kv down"))
+        await worker.check({}, [], {})
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+
+    async def test_the_migrated_flag_is_read_once(self):
+        namespace = FakeNamespace()
+        store = namespace.get("plug")
+        await store.get_value(entry.DESIRED_KEY)
+        del namespace.data[entry.MIGRATED_KEY]  # would re-copy from KV if read again
+        await store.get_value(entry.DESIRED_KEY)
+        self.assertNotIn(entry.MIGRATED_KEY, namespace.data)
 
     async def test_missing_binding_is_a_config_error(self):
         worker = self.worker()
