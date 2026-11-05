@@ -37,7 +37,8 @@ Every minute:
    [`/boiler`](#controlling-the-boiler-boiler-admin-only)).
 4. Otherwise poll Shelly Cloud `/device/status`, and send `/device/relay/control`
    only if the plug's real state differs. If grid returns while an admin holds the
-   boiler off, it stays off. Then save the new desired state in KV.
+   boiler off, it stays off. Then save the new desired state (in the `PlugState`
+   Durable Object, see below).
    If Shelly is offline, nothing is saved, so the next run retries.
 
 The Deye bearer token is cached in KV and refreshed automatically when it
@@ -54,10 +55,18 @@ expires or is rejected.
   stations or accounts (`/order/*`, `/strategy/*`, logger and station management)
   are refused before any request is made, with a test for each.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
-  KV (`STATE`) holds only the derived Deye token, a login back-off flag, the
-  `on`/`off` state, the voltage-cooldown start time, the admin's manual-off flags,
-  notification dedup state and Telegram bookkeeping (update offset, webhook replay
-  guard, cooldowns).
+  The plug state (the `on`/`off` desired state, the admin's manual-off flags and the
+  switch-on cooldown) lives in the `PlugState` Durable Object (binding `PLUG`), which
+  is strongly consistent: KV can serve a value up to ~60 s old elsewhere, which could
+  end the cooldown early or miss a hold. Its first call copies those values from KV
+  once, and every change is still mirrored to KV (never read for these keys), so
+  rolling back to an older version starts from the current state. Each write of the
+  desired state or the admin's hold is read back: if the store loses values, the run
+  fails with the usual error alert (and a ⛔ press says the hold wasn't saved) instead
+  of the cooldown and the hold silently not working.
+  KV (`STATE`) holds only the derived Deye token, a login back-off flag, notification
+  dedup state and Telegram bookkeeping (update offset, webhook replay guard,
+  cooldowns).
 - The only HTTP surface is the optional Telegram webhook (see below). Without
   `TELEGRAM_WEBHOOK_SECRET` every request gets a 404; preview URLs are off.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
@@ -126,8 +135,10 @@ Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
-- grid is lost and the boiler is switched off, and when it's back on after the
-  cooldown (saying how long the outage lasted);
+- grid is lost and the boiler is switched off; as soon as it's back (saying how long
+  the outage lasted and that the boiler follows after the cooldown), and again when the
+  boiler is back on. If the grid goes away again during the cooldown, that is said once;
+  a voltage dip only restarts the wait, silently;
 - grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) or rises above
   `HIGH_OFF_VOLTAGE` and the boiler is switched off, and when it switches back on after
   the cooldown, with how long it lasted (below 100 V counts as an outage, not low voltage);
@@ -311,8 +322,9 @@ scripts/test-env.sh down              # remove the webhook and delete the Worker
 - `test-env.sh` refuses to run if `.test.vars` shares the bot token, chat or webhook
   secret with `.prod.vars`, so it can never take over the production bot.
 - It reads the real inverter and switches the **real plug**, like production. It
-  reads production's KV (`PROD_STATE`, never written) so it never switches on a
-  boiler the production admin holds off with ⛔.
+  reads production's plug state (Durable Object binding `PROD_PLUG`, never written)
+  so it never switches on a boiler the production admin holds off with ⛔. Deploy
+  production with this version first: the binding needs production's `PlugState`.
 - CI never deploys it; it's deployed from your checkout.
 
 ### Alerts
@@ -323,7 +335,7 @@ CPU-limit kills. A log-based alert can't detect the cron not running at all.
 
 ## Run locally
 
-Hits the real Deye and Shelly APIs; KV is simulated locally. `.dev.vars` is
+Hits the real Deye and Shelly APIs; KV and the Durable Object are simulated locally. `.dev.vars` is
 generated from `.test.vars` (test bot and test group), never from `.prod.vars`, so a
 local run can't post to the family chat or race production for Telegram updates.
 It leaves out `TELEGRAM_WEBHOOK_SECRET`: Telegram can't reach a local Worker, so it
