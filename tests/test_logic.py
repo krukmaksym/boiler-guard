@@ -167,6 +167,18 @@ class GridRelayTest(unittest.TestCase):
         self.assertIsNone(logic.grid_relay(data, SN, NOW))
 
 
+class DischargeLimitTest(unittest.TestCase):
+    def test_reads_max_discharge_current(self):
+        ok = {"code": "1000000", "msg": "success", "success": True}
+        self.assertEqual(logic.discharge_limit({**ok, "maxDischargeCurrent": 80}), 80.0)
+        self.assertEqual(logic.discharge_limit({**ok, "maxDischargeCurrent": "90"}), 90.0)
+        for bad in (None, 0, -5, "n/a", "nan", True, [80]):
+            self.assertIsNone(logic.discharge_limit({**ok, "maxDischargeCurrent": bad}), bad)
+        self.assertIsNone(logic.discharge_limit(ok))  # no field
+        self.assertIsNone(logic.discharge_limit({"success": False, "maxDischargeCurrent": 80}))
+        self.assertIsNone(logic.discharge_limit(None))
+
+
 class BatteryAmpsTest(unittest.TestCase):
     def test_amps_from_the_real_voltage_with_losses(self):
         self.assertAlmostEqual(logic.battery_amps(1930.0, 53.0), 1930 / 53 / 0.95)
@@ -281,6 +293,7 @@ class DeyeUrlTest(unittest.TestCase):
             "https://eu1-developer.deyecloud.com/v1.0/account/token?appId=1",
         )
         self.assertTrue(logic.deye_url("http://localhost:8790", "/v1.0/device/latest"))
+        self.assertTrue(logic.deye_url(self.BASE, "/v1.0/config/battery"))  # reads settings only
 
     # Every endpoint in https://eu1-developer.deyecloud.com/v2/api-docs (2026-10-18)
     # that can change inverter settings, the station or the account.

@@ -62,6 +62,10 @@ MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = 
 # is undone). Outside this window the cron never touches Shelly unless grid changes.
 VERIFY_OFF_KEY = "state:verify_off"
 VERIFY_OFF_SECONDS = 180
+# The inverter's battery discharge limit, read from Deye for /status at most hourly
+# ("none" caches a refusal too, so Deye isn't asked on every status request).
+DISCHARGE_LIMIT_KEY = "deye:discharge_limit"
+DISCHARGE_LIMIT_SECONDS = 3600
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
 LAST_UPDATE_KEY = "telegram:last_update"  # webhook: highest update_id handled (replay guard)
@@ -242,15 +246,6 @@ class Default(WorkerEntrypoint):
             raise ConfigError("need ON_VOLTAGE <= HIGH_ON_VOLTAGE <= HIGH_OFF_VOLTAGE")
         return values
 
-    def discharge_limit(self):
-        """BATTERY_DISCHARGE_LIMIT_A: the inverter's "Max A Discharge" setting, shown next
-        to the backup load in /status. Display only, so a bad value just hides it."""
-        try:
-            value = float(self.var("BATTERY_DISCHARGE_LIMIT_A", "80"))
-        except ValueError:
-            return None
-        return value if value > 0 and value == value else None
-
     def cooldown_seconds(self):
         """VOLTAGE_COOLDOWN_SECONDS: how long the voltage must stay in range before the
         boiler switches back on after a voltage switch-off (0 turns the wait off)."""
@@ -336,14 +331,37 @@ class Default(WorkerEntrypoint):
         log("refreshed Deye token")
         return token
 
-    async def deye_latest(self, secrets):
-        payload = {"deviceList": [secrets["INVERTER_SN"]]}
+    async def deye_read(self, secrets, path, payload):
+        """A read-only Deye call, retried once with a fresh token if it was refused."""
         for refresh in (False, True):
             token = await self.deye_token(secrets, refresh=refresh)
-            status, data = await self.deye_post("/v1.0/device/latest", payload, token=token)
+            status, data = await self.deye_post(path, payload, token=token)
             if not logic.is_deye_auth_error(status, data):
                 return data
         return data
+
+    async def deye_latest(self, secrets):
+        return await self.deye_read(secrets, "/v1.0/device/latest", {"deviceList": [secrets["INVERTER_SN"]]})
+
+    async def discharge_limit(self):
+        """The inverter's "Max A Discharge" setting from Deye's read-only /config/battery,
+        cached for an hour; None when Deye doesn't give it (the status line then shows
+        the current without the limit). Never raises."""
+        cached = await self.kv_get(DISCHARGE_LIMIT_KEY)
+        if cached:
+            return logic.parse_time(cached)  # a plain float parser; "none" gives None
+        limit = None
+        try:
+            secrets = self.secrets()
+            data = await self.deye_read(secrets, "/v1.0/config/battery", {"deviceSn": secrets["INVERTER_SN"]})
+            limit = logic.discharge_limit(data)
+            if limit is None:
+                msg = data.get("msg") if isinstance(data, dict) else None
+                log(f"Deye battery config has no discharge limit (msg={str(msg)[:80]!r})")
+        except Exception as exc:
+            log(f"Deye battery config unavailable: {type(exc).__name__}")
+        await self.kv_put(DISCHARGE_LIMIT_KEY, str(limit) if limit else "none", ttl=DISCHARGE_LIMIT_SECONDS)
+        return limit
 
     async def deye_reading(self, secrets):
         """A logic.Reading from one Deye call. Its voltage is None when Deye is
@@ -577,7 +595,7 @@ class Default(WorkerEntrypoint):
             "relay": run.get("relay"),
             "load": run.get("load"),
             "load_amps": logic.battery_amps(run.get("load"), run.get("battery_voltage")),
-            "amps_limit": self.discharge_limit(),
+            "amps_limit": await self.discharge_limit(),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
             "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
             "manual_off": await self.held_off(),

@@ -27,8 +27,6 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 BATTERY_VOLTAGE_KEY = "BatteryVoltage"
-# The inverter's "Max A Discharge" setting, shown next to the backup load in /status.
-BATTERY_DISCHARGE_LIMIT_A = "80"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
@@ -78,8 +76,6 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 BATTERY_VOLTAGE_KEY = "BatteryVoltage"
-# The inverter's "Max A Discharge" setting, shown next to the backup load in /status.
-BATTERY_DISCHARGE_LIMIT_A = "80"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"

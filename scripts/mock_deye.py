@@ -50,6 +50,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 {"code": "1000000", "success": True, "accessToken": "mock-token", "expiresIn": "5183999"}
             )
+        if path == "/v1.0/config/battery":
+            return self.reply(
+                {"code": "1000000", "msg": "success", "success": True, "maxDischargeCurrent": 80}
+            )
         if path == "/v1.0/device/latest":
             print(f"mock: served device/latest ({state['voltage']}V)", flush=True)
             devices = [

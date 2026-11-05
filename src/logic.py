@@ -10,7 +10,13 @@ OFF = "off"
 
 # The only Deye endpoints this Worker may ever call. Everything that changes
 # inverter settings lives under /order/* and /strategy/*, and is refused here.
-DEYE_READ_ONLY_PATHS = frozenset({"/v1.0/account/token", "/v1.0/device/latest"})
+DEYE_READ_ONLY_PATHS = frozenset(
+    {
+        "/v1.0/account/token",
+        "/v1.0/device/latest",
+        "/v1.0/config/battery",  # reads the battery settings; writing them is /order/battery/*
+    }
+)
 
 _SHELLY_HOST_RE = re.compile(r"^[a-z0-9-]+\.shelly\.cloud$")
 _DEYE_HOST_RE = re.compile(r"^[a-z0-9-]+\.deyecloud\.com$")
@@ -182,6 +188,21 @@ def device_readings(
         problem=problem,
         battery_voltage=_reading(device, battery_voltage_key),
     )
+
+
+def discharge_limit(data):
+    """The inverter's "Max A Discharge" setting (A) from a Deye /config/battery
+    response, or None when Deye refused or didn't send a usable value."""
+    if not isinstance(data, dict) or not (data.get("success") or str(data.get("code")) == "1000000"):
+        return None
+    value = data.get("maxDischargeCurrent")
+    if isinstance(value, bool):
+        return None
+    try:
+        amps = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amps if math.isfinite(amps) and amps > 0 else None
 
 
 NOMINAL_BATTERY_VOLTS = 51.2  # a 16-cell LiFePO4 pack, when Deye doesn't report the voltage

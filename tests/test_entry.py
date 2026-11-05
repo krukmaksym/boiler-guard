@@ -42,6 +42,7 @@ import logic  # noqa: E402
 
 SECRETS = {name: f"test-{name.lower()}" for name in entry.REQUIRED_SECRETS}
 SECRETS["SHELLY_HOST"] = "shelly-1-eu.shelly.cloud"
+TOKEN = "test-deye-token"  # noqa: S105 - a fake bearer token for the mocked Deye
 
 
 class FakeKV:
@@ -301,15 +302,33 @@ class VoltageCooldownTest(EntryTestCase):
         self.assertEqual(reply, bot.AUTO_WAIT_OFF_GRID_MESSAGE)
         self.assertEqual(self.switched, [])
 
+    def deye_config(self, worker, response):
+        worker.deye_token = mock.AsyncMock(return_value=TOKEN)
+        worker.deye_post = mock.AsyncMock(return_value=(200, response))
+        return worker.deye_post
+
     async def test_status_shows_battery_current_against_the_limit(self):
         worker = self.worker()
+        post = self.deye_config(worker, {"code": "1000000", "success": True, "maxDischargeCurrent": 80})
         run = {"voltage": 230.0, "load": 1930.0, "battery_voltage": 53.0}
         snapshot = await worker.status_snapshot(run)
         self.assertAlmostEqual(snapshot["load_amps"], 1930 / 53 / 0.95)
         self.assertEqual(snapshot["amps_limit"], 80.0)
-        for bad in ("lots", "0", "nan"):
-            worker.env.BATTERY_DISCHARGE_LIMIT_A = bad
-            self.assertIsNone(worker.discharge_limit())
+        post.assert_awaited_once_with(
+            "/v1.0/config/battery", {"deviceSn": SECRETS["INVERTER_SN"]}, token=TOKEN
+        )
+        await worker.status_snapshot(run)
+        post.assert_awaited_once()  # cached for an hour
+
+    async def test_a_refused_limit_is_hidden_and_cached(self):
+        worker = self.worker()
+        post = self.deye_config(worker, {"success": False, "msg": "auth no operation permission"})
+        self.assertIsNone(await worker.discharge_limit())
+        self.assertIsNone(await worker.discharge_limit())
+        post.assert_awaited_once()
+        worker.deye_post = mock.AsyncMock(side_effect=OSError("network down"))
+        worker.env.STATE.data.pop(entry.DISCHARGE_LIMIT_KEY)
+        self.assertIsNone(await worker.discharge_limit())  # never raises
 
     async def test_no_cooldown_when_set_to_zero(self):
         worker = await self.low_voltage_off()
