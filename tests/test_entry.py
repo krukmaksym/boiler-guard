@@ -331,6 +331,26 @@ class VoltageCooldownTest(EntryTestCase):
         await worker.check(state, outbox, {})
         self.assertIn("Світла не було 27 хв", outbox[-1])  # since it went away again
 
+    async def test_inverter_off_grid_again_during_the_wait_is_announced_once(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.at(worker, 230.0, 1)
+        await worker.check(state, outbox, {})  # "back"
+        for minute in (3, 4):
+            self.now = 1_800_000_000.0 + minute * 60
+            worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(240.0, relay="Break"))
+            await worker.check(state, outbox, {})
+        relay = [m for m in outbox if m and "знову відключився" in m]
+        self.assertEqual(len(relay), 1)
+        self.assertIn("протримається 10 хв", relay[0])
+        self.at(worker, 230.0, 20)  # relay back ("Pull-in" implied by no relay key)
+        await worker.check(state, outbox, {})
+        self.assertIn(
+            "✅ Інвертор знову підключився до мережі (230.0 В). Відключення тривало 17 хв.", outbox[-1]
+        )
+        self.assertEqual(self.switched, [logic.OFF])  # still waiting for the cooldown
+
     async def test_a_voltage_dip_during_the_wait_is_silent(self):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=190.0)
         state, outbox = {}, []
@@ -397,6 +417,16 @@ class VoltageCooldownTest(EntryTestCase):
         run = {"voltage": 230.0, "load": 1930.0, "battery_voltage": 53.0}
         snapshot = await worker.status_snapshot(run)
         self.assertAlmostEqual(snapshot["load_amps"], 1930 / 53 / 0.95)
+
+    async def test_refused_on_in_the_dead_band_names_the_threshold(self):
+        worker = self.worker({entry.DESIRED_KEY: entry.COOLDOWN_OFF})
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(209.0, relay="Pull-in"))
+        reply = await worker.apply_control(logic.ON, {})
+        self.assertIn("нижча за поріг увімкнення бойлера (210 В)", reply)
+        self.assertIn("підніметься до 210 В і протримається 10 хв.", reply)
+        worker.env.ON_VOLTAGE = "212"
+        reply = await worker.apply_control(logic.ON, {})
+        self.assertIn("(212 В)", reply)  # follows the configured threshold
 
     async def test_no_cooldown_when_set_to_zero(self):
         worker = await self.low_voltage_off()
@@ -493,6 +523,17 @@ class PlugStateTest(EntryTestCase):
         worker.env.STATE.put = mock.AsyncMock(side_effect=OSError("kv down"))
         await worker.check({}, [], {})
         self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+
+    async def test_deleting_a_missing_key_writes_nothing(self):
+        namespace = FakeNamespace()
+        store = namespace.get("plug")
+        storage = store.ctx.storage
+        storage.delete = mock.AsyncMock()
+        self.assertEqual(await store.delete_value(entry.ON_PENDING_KEY), "")
+        storage.delete.assert_not_awaited()
+        namespace.data[entry.ON_PENDING_KEY] = "123"
+        self.assertEqual(await store.delete_value(entry.ON_PENDING_KEY), "1")
+        storage.delete.assert_awaited_once_with(entry.ON_PENDING_KEY)
 
     async def test_the_migrated_flag_is_read_once(self):
         namespace = FakeNamespace()

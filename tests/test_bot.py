@@ -153,8 +153,16 @@ class AdminButtonsTest(unittest.TestCase):
             return bot.control_message("on", None, False, voltage=voltage, off_grid=off_grid)
 
         self.assertEqual(reply(240.0, off_grid=True), bot.AUTO_WAIT_OFF_GRID_MESSAGE)
-        self.assertIn("Світло є, але напруга в мережі (196 В) поза нормою", reply(196.0))
-        self.assertIn("(207 В)", reply(207.0))  # dead band after a low-voltage switch-off
+        self.assertIn("напруга (196 В) нижча за поріг увімкнення бойлера (210 В)", reply(196.0))
+        band = reply(209.0)  # dead band after a low-voltage switch-off: not "out of range"
+        self.assertIn("напруга (209 В) нижча за поріг увімкнення бойлера (210 В)", band)
+        self.assertIn("коли напруга підніметься до 210 В.", band)
+        self.assertNotIn("поза нормою", band)
+        high = reply(258.0)
+        self.assertIn("напруга (258 В) вища за поріг увімкнення бойлера (255 В)", high)
+        self.assertIn("коли напруга опуститься до 255 В.", high)
+        waits = bot.control_message("on", None, False, voltage=209.0, limits={"cooldown_minutes": 10})
+        self.assertIn("підніметься до 210 В і протримається 10 хв.", waits)
         for no_grid in (None, 0.0):
             self.assertEqual(reply(no_grid), bot.AUTO_WAIT_MESSAGE)
             self.assertEqual(reply(no_grid, off_grid=True), bot.AUTO_WAIT_MESSAGE)  # an outage
@@ -241,9 +249,30 @@ class StatusMessageTest(unittest.TestCase):
 
     def test_cooldown_line_only_while_in_range(self):
         # Right after a dip the saved wait lags behind this reading.
-        self.assertNotIn("⏳", bot.status_message(196.0, "off", 80.0, wait_seconds=290))
-        self.assertNotIn("⏳", bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Break"))
-        self.assertIn("⏳", bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Pull-in"))
+        countdown = "Напруга в нормі"
+        self.assertNotIn(countdown, bot.status_message(196.0, "off", 80.0, wait_seconds=290))
+        self.assertNotIn(countdown, bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Break"))
+        self.assertIn(countdown, bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Pull-in"))
+
+    def test_why_an_off_boiler_stays_off(self):
+        def text(voltage, plug="off", **kwargs):
+            return bot.status_message(voltage, plug, 80.0, cooldown_minutes=10, **kwargs)
+
+        self.assertIn(
+            "⏳ Бойлер увімкнеться сам, коли напруга підніметься до 210 В і протримається 10 хв", text(209.0)
+        )
+        self.assertIn("підніметься до 210 В", text(196.0))
+        self.assertIn("⏳ Бойлер увімкнеться сам, коли напруга опуститься до 255 В", text(258.0))
+        self.assertIn("опуститься до 255 В", text(268.0))
+        for quiet in (
+            text(230.0),  # in range: nothing to wait for (or the cooldown line says it)
+            text(209.0, plug="on"),
+            text(209.0, manual_off=True),
+            text(0.0),  # an outage
+            text(240.0, relay="Break"),  # off grid: its own line says why
+            text(None),
+        ):
+            self.assertNotIn("Бойлер увімкнеться сам", quiet)
 
     def test_cooldown_line(self):
         text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)

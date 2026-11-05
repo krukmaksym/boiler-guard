@@ -176,9 +176,12 @@ class PlugState(DurableObject):
         """Deletes the value; "1" when there was one, else "" (so callers can skip work)."""
         self._check(key)
         await self._ready()
-        existed = bool(await self.ctx.storage.get(key))
-        await self.ctx.storage.delete(key)
-        await self.ctx.storage.delete(key + EXPIRES_SUFFIX)
+        storage = self.ctx.storage
+        existed = bool(await storage.get(key))
+        if existed:  # nothing to delete costs no storage write (called every minute in outages)
+            await storage.delete(key)
+        if await storage.get(key + EXPIRES_SUFFIX) is not None:
+            await storage.delete(key + EXPIRES_SUFFIX)
         return "1" if existed else ""
 
 
@@ -375,7 +378,9 @@ class Default(WorkerEntrypoint):
         """Also write the change to KV, which is never read for these keys any more, so
         that rolling back to a version that reads KV starts from the current state.
         Best effort: the Durable Object is what counts. Changes are rare (no KV write
-        on an ordinary run). Drop this once rolling back past it is no longer needed."""
+        on an ordinary run).
+        TODO(after 2026-11-20): remove this, and the old plug keys from KV, once the
+        Durable Object version has run two weeks without a rollback."""
         try:
             if value is None:
                 await self.env.STATE.delete(key)
@@ -698,6 +703,7 @@ class Default(WorkerEntrypoint):
             "manual_off": await self.held_off(),
             "power": power,
             "wait_seconds": await self.cooldown_remaining(),
+            **self.reply_limits(),
         }
 
     async def cooldown_remaining(self):
@@ -796,7 +802,22 @@ class Default(WorkerEntrypoint):
         except logic.ApiError:
             return bot.STATE_FAILED_MESSAGE
         off_grid = logic.relay_open(run.get("relay")) is True
-        return bot.control_message(action, target, switched, voltage=run.get("voltage"), off_grid=off_grid)
+        voltage = run.get("voltage")
+        return bot.control_message(
+            action, target, switched, voltage=voltage, off_grid=off_grid, limits=self.reply_limits()
+        )
+
+    def reply_limits(self):
+        """The thresholds a refused "on" reply names; {} (the defaults) if misconfigured."""
+        try:
+            thresholds = self.thresholds()
+            return {
+                "on_at": thresholds["on_at"],
+                "high_on": thresholds["high_on"],
+                "cooldown_minutes": round(self.cooldown_seconds() / 60),
+            }
+        except (ConfigError, ValueError):
+            return {}
 
     async def poll_plug(self):
         """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""
@@ -873,6 +894,9 @@ class Default(WorkerEntrypoint):
             await self.clear_on_pending()
             if logic.grid_condition(voltage) == "lost":
                 outbox.append(notify.on_lost_again(state, voltage, time.time()))
+            elif disconnected:
+                cooldown_minutes = round(cooldown / 60)
+                outbox.append(notify.on_lost_again(state, voltage, time.time(), "relay", cooldown_minutes))
         elif desired == logic.OFF and saved == logic.OFF:
             await self.state_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.

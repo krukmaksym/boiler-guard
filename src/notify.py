@@ -360,14 +360,23 @@ def on_back(state, voltage, now, cooldown_minutes, held=False):
     return back_message(voltage, lasted, cooldown_minutes, cause, held)
 
 
-def on_lost_again(state, voltage, now):
-    """The grid is gone again during the cooldown, after the family was told it was
-    back: say so once (a dip in voltage only restarts the wait, silently)."""
+def on_lost_again(state, voltage, now, cause=None, cooldown_minutes=0):
+    """The grid is gone again during the cooldown (cause None), or the inverter has cut
+    itself off it again (cause "relay"), after the family was told it was back: say so
+    once and re-arm on_back, so the next return is announced with how long this lasted.
+    A dip in voltage only restarts the wait, silently."""
     if not state.pop("back_notified", False):
         return None
     state["off_since"] = now
     for flag in ("low_voltage", "high_voltage", "relay_voltage"):
         state.pop(flag, None)
+    if cause == "relay":
+        state["relay_voltage"] = True
+        return (
+            f"⚠️ Інвертор знову відключився від мережі (мережа {voltage:.1f} В) і живить дім від "
+            "батареї. Бойлер лишається вимкненим; він увімкнеться, коли інвертор знову "
+            f"підключиться до мережі{_cooldown_tail(cooldown_minutes)}."
+        )
     return f"⚡️ Світло знову зникло (мережа {_v(voltage)}). Бойлер лишається вимкненим."
 
 

@@ -82,14 +82,27 @@ AUTO_WAIT_OFF_GRID_MESSAGE = (
 )
 
 
-def auto_wait_voltage_message(voltage):
-    """Grid is present, but its voltage keeps the boiler off (out of range, or not yet
-    back at ON_VOLTAGE after a low-voltage switch-off)."""
-    return (
-        f"🔌 Автоматичний режим відновлено. Світло є, але напруга в мережі ({voltage:.0f} В) "
-        "поза нормою для бойлера, тому він не вмикається. Він увімкнеться сам, коли напруга "
-        "нормалізується."
-    )
+def auto_wait_voltage_message(voltage, on_at=210.0, high_on=255.0, cooldown_minutes=0):
+    """Grid is present, but its voltage keeps the boiler off: below ON_VOLTAGE (too low,
+    or not yet back up after a low-voltage switch-off) or above HIGH_ON_VOLTAGE. Names
+    the exact threshold, since e.g. 209 V is not "out of range", just not high enough."""
+    if voltage > high_on:
+        reason = f"напруга ({voltage:.0f} В) вища за поріг увімкнення бойлера ({high_on:.0f} В)"
+    else:
+        reason = f"напруга ({voltage:.0f} В) нижча за поріг увімкнення бойлера ({on_at:.0f} В)"
+    until = switch_on_when(voltage, on_at, high_on, cooldown_minutes)
+    return f"🔌 Автоматичний режим відновлено. Світло є, але {reason}. Він увімкнеться сам, {until}."
+
+
+def switch_on_when(voltage, on_at=210.0, high_on=255.0, cooldown_minutes=0):
+    """'коли напруга підніметься до 210 В і протримається 10 хв' (or 'опуститься до'),
+    or None when the voltage is already within [on_at, high_on]."""
+    wait = f" і протримається {cooldown_minutes} хв" if cooldown_minutes else ""
+    if voltage > high_on:
+        return f"коли напруга опуститься до {high_on:.0f} В{wait}"
+    if voltage < on_at:
+        return f"коли напруга підніметься до {on_at:.0f} В{wait}"
+    return None
 
 
 PROD_HOLD_MESSAGE = (  # test Worker only
@@ -201,18 +214,21 @@ def replies(found):
     return latest
 
 
-def control_message(action, target, switched, voltage=None, off_grid=False):
+def control_message(action, target, switched, voltage=None, off_grid=False, limits=None):
     """Reply to a button press. Says whether the plug was actually switched or was
     already in that state, so the admin isn't told "switched on" for a no-op. When "on"
     is refused, says why: voltage (this run's reading) shows whether grid is present,
-    off_grid that the inverter has disconnected itself from it."""
+    off_grid that the inverter has disconnected itself from it. limits: on_at, high_on
+    and cooldown_minutes for auto_wait_voltage_message."""
     if action == "off":
         head = "⛔ Бойлер вимкнено вручну." if switched else "⛔ Бойлер вже вимкнено."
         return f"{head} {HOLD_NOTE}"
     if target != "on":
         if logic.grid_condition(voltage) in (None, "lost"):
             return AUTO_WAIT_MESSAGE
-        return AUTO_WAIT_OFF_GRID_MESSAGE if off_grid else auto_wait_voltage_message(voltage)
+        if off_grid:
+            return AUTO_WAIT_OFF_GRID_MESSAGE
+        return auto_wait_voltage_message(voltage, **(limits or {}))
     if switched:
         return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
     return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."
@@ -259,12 +275,17 @@ def status_message(
     battery=None,
     relay=None,
     load_amps=None,
+    on_at=210.0,
+    high_on=255.0,
+    cooldown_minutes=0,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler
     switches back on after a voltage switch-off (None or 0: not waiting). battery:
     battery power in W, Deye's sign (negative while charging). relay: the inverter's
     grid relay status text from Deye ("Pull-in" while connected), or None. load_amps:
-    battery current the backup load would need on battery alone, shown with the load."""
+    battery current the backup load would need on battery alone, shown with the load.
+    on_at, high_on, cooldown_minutes: when an off boiler switches back on, named while
+    the voltage (grid present, inverter on grid) is outside that window."""
     lines = ["📊 Поточний стан"]
     condition = logic.grid_condition(voltage, off_below, high_off)
     if condition is None:
@@ -296,6 +317,11 @@ def status_message(
         # Only while this reading is in range: right after a dip the saved wait lags behind.
         minutes = max(round(wait_seconds / 60), 1)
         lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
+    elif plug == "off" and condition not in (None, "lost") and not disconnected:
+        # E.g. 209 V after a low-voltage switch-off: "Світло є", yet the boiler stays off.
+        until = switch_on_when(voltage, on_at, high_on, cooldown_minutes)
+        if until:
+            lines.append(f"⏳ Бойлер увімкнеться сам, {until}")
     if soc is not None or battery is not None:
         lines.append(battery_line(soc, battery))
     if load is not None:
