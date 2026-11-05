@@ -132,8 +132,10 @@ Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
-- grid is lost and the boiler is switched off, and when it's back on after the
-  cooldown (saying how long the outage lasted);
+- grid is lost and the boiler is switched off; as soon as it's back (saying how long
+  the outage lasted and that the boiler follows after the cooldown), and again when the
+  boiler is back on. If the grid goes away again during the cooldown, that is said once;
+  a voltage dip only restarts the wait, silently;
 - grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) or rises above
   `HIGH_OFF_VOLTAGE` and the boiler is switched off, and when it switches back on after
   the cooldown, with how long it lasted (below 100 V counts as an outage, not low voltage);

@@ -301,8 +301,11 @@ def on_switched(
     high = state.pop("high_voltage", False)
     relay = state.pop("relay_voltage", False)
     since = state.pop("off_since", None)
+    announced = state.pop("back_notified", False)
     if previous is None:
         return None
+    if announced:  # on_back already said the grid is back and for how long
+        return switched_on_after_wait_message(switched, held, now - back_since if back_since else None)
     back = back_since if back_since is not None else now
     lasted = back - since if back is not None and since is not None else None
     waited = now - back_since if now is not None and back_since is not None else None
@@ -311,6 +314,61 @@ def on_switched(
     if low or high:
         return voltage_restored_message(voltage, switched, held, lasted, high=high, waited=waited)
     return grid_message(desired, voltage, switched, held, lasted, waited=waited)
+
+
+def switched_on_after_wait_message(switched, held, waited):
+    """The cooldown is over (the grid's return was announced when it started)."""
+    if held:
+        return None  # the "back" message already said it stays off
+    stable = f"напруга стабільна вже {duration_text(waited)}" if waited else "напруга стабільна"
+    if switched:
+        return f"🔥 Бойлер знову увімкнено: {stable}."
+    return f"🔥 Бойлер уже увімкнений: {stable}."
+
+
+def back_message(voltage, lasted, cooldown_minutes, cause, held=False):
+    """The grid (or the voltage, or the inverter's connection) is back; the boiler
+    switches on only after the cooldown. cause: "low"/"high"/"relay" or None (outage)."""
+    gap = duration_text(lasted) if lasted is not None else None
+    if cause == "relay":
+        head = f"✅ Інвертор знову підключився до мережі ({voltage:.1f} В)."
+        gap = f" Відключення тривало {gap}." if gap else ""
+    elif cause in ("low", "high"):
+        head = f"✅ Напруга в мережі відновилася ({voltage:.1f} В)."
+        kind = "Висока" if cause == "high" else "Низька"
+        gap = f" {kind} напруга трималася {gap}." if gap else ""
+    else:
+        head = f"✅ Світло повернулося (мережа {_v(voltage)})."
+        gap = f" Світла не було {gap}." if gap else ""
+    if held:
+        tail = "Бойлер лишається вимкненим: його вимкнули вручну."
+    else:
+        tail = f"Бойлер увімкнеться за {cooldown_minutes} хв, якщо напруга буде стабільною."
+    return f"{head}{gap} {tail}"
+
+
+def on_back(state, voltage, now, cooldown_minutes, held=False):
+    """The cooldown after a switch-off has just started (the voltage is back in range):
+    announce it now rather than only when the boiler switches on. Once per episode;
+    on_lost_again re-arms it after a real outage during the wait."""
+    if state.get("back_notified"):
+        return None
+    state["back_notified"] = True
+    since = state.get("off_since")
+    lasted = now - since if since is not None else None
+    cause = next((c for c in ("relay", "low", "high") if state.get(f"{c}_voltage")), None)
+    return back_message(voltage, lasted, cooldown_minutes, cause, held)
+
+
+def on_lost_again(state, voltage, now):
+    """The grid is gone again during the cooldown, after the family was told it was
+    back: say so once (a dip in voltage only restarts the wait, silently)."""
+    if not state.pop("back_notified", False):
+        return None
+    state["off_since"] = now
+    for flag in ("low_voltage", "high_voltage", "relay_voltage"):
+        state.pop(flag, None)
+    return f"⚡️ Світло знову зникло (мережа {_v(voltage)}). Бойлер лишається вимкненим."
 
 
 def on_error(state, signature, detail, now):

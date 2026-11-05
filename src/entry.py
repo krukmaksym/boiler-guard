@@ -850,11 +850,16 @@ class Default(WorkerEntrypoint):
             if logic.cooldown_left(back_since, now, cooldown) > 0:
                 if back_since is None:
                     await self.state_put(ON_PENDING_KEY, str(now))
+                    # Tell the family now; the switch-on message follows after the wait.
+                    held_now = await self.held_off()
+                    outbox.append(notify.on_back(state, voltage, now, round(cooldown / 60), held_now))
                 log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
                 await self.enforce_hold(secrets, channel, run)
                 return
         if desired == logic.OFF and saved == COOLDOWN_OFF:
             await self.clear_on_pending()
+            if logic.grid_condition(voltage) == "lost":
+                outbox.append(notify.on_lost_again(state, voltage, time.time()))
         elif desired == logic.OFF and saved == logic.OFF:
             await self.state_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.

@@ -301,10 +301,62 @@ class VoltageCooldownTest(EntryTestCase):
         self.at(worker, 221.0, 1)
         await worker.check(state, outbox, {})
         self.assertEqual(self.switched, [logic.OFF])
+        self.assertEqual(  # announced as soon as the grid is back, not after the wait
+            outbox[-1],
+            "✅ Світло повернулося (мережа 221 В). Світла не було 1 хв. "
+            "Бойлер увімкнеться за 10 хв, якщо напруга буде стабільною.",
+        )
+        sent = len([m for m in outbox if m])
+        self.at(worker, 221.0, 5)
+        await worker.check(state, outbox, {})
+        self.assertEqual(len([m for m in outbox if m]), sent)  # nothing during the wait
         self.at(worker, 221.0, 11)
         await worker.check(state, outbox, {})
         self.assertEqual(self.switched, [logic.OFF, logic.ON])
-        self.assertIn("Світла не було 1 хв. Напруга стабільна вже 10 хв", outbox[-1])
+        self.assertEqual(outbox[-1], "🔥 Бойлер знову увімкнено: напруга стабільна вже 10 хв.")
+
+    async def test_grid_lost_again_during_the_wait_is_announced_once(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.at(worker, 225.0, 1)
+        await worker.check(state, outbox, {})  # "back"
+        self.at(worker, 0.0, 3)
+        await worker.check(state, outbox, {})
+        self.assertEqual(outbox[-1], "⚡️ Світло знову зникло (мережа 0 В). Бойлер лишається вимкненим.")
+        self.at(worker, 0.0, 4)
+        await worker.check(state, outbox, {})
+        self.assertEqual(len([m for m in outbox if m and "знову зникло" in m]), 1)  # once
+        self.at(worker, 225.0, 30)
+        await worker.check(state, outbox, {})
+        self.assertIn("Світла не було 27 хв", outbox[-1])  # since it went away again
+
+    async def test_a_voltage_dip_during_the_wait_is_silent(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=190.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.at(worker, 230.0, 1)
+        await worker.check(state, outbox, {})
+        self.assertIn("✅ Напруга в мережі відновилася (230.0 В)", outbox[-1])
+        sent = len([m for m in outbox if m])
+        self.at(worker, 200.0, 4)  # dips again: the wait restarts, no message
+        await worker.check(state, outbox, {})
+        self.at(worker, 230.0, 5)
+        await worker.check(state, outbox, {})
+        self.assertEqual(len([m for m in outbox if m]), sent)
+
+    async def test_back_while_held_says_it_stays_off(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON, entry.MODE_KEY: logic.OFF}, voltage=0.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.at(worker, 230.0, 1)
+        await worker.check(state, outbox, {})
+        self.assertIn("Бойлер лишається вимкненим: його вимкнули вручну.", outbox[-1])
+        self.at(worker, 230.0, 11)
+        outbox.clear()
+        await worker.check(state, outbox, {})
+        self.assertEqual([m for m in outbox if m], [])  # nothing new to say
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.HELD_ON)
 
     async def test_an_old_plain_off_gets_the_cooldown(self):
         worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF, voltage=0.0)
