@@ -897,6 +897,17 @@ class Default(WorkerEntrypoint):
             elif disconnected:
                 cooldown_minutes = round(cooldown / 60)
                 outbox.append(notify.on_lost_again(state, voltage, time.time(), "relay", cooldown_minutes))
+            else:  # grid present, but outside the switch-on window (e.g. 196 V after an outage)
+                outbox.append(
+                    notify.on_back_but_low(
+                        state,
+                        voltage,
+                        time.time(),
+                        on_at=thresholds["on_at"],
+                        high_on=thresholds["high_on"],
+                        cooldown_minutes=round(cooldown / 60),
+                    )
+                )
         elif desired == logic.OFF and saved == logic.OFF:
             await self.state_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.

@@ -280,7 +280,7 @@ def status_message(
     cooldown_minutes=0,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler
-    switches back on after a voltage switch-off (None or 0: not waiting). battery:
+    switches back on after a switch-off (None: not waiting; 0: the wait is over). battery:
     battery power in W, Deye's sign (negative while charging). relay: the inverter's
     grid relay status text from Deye ("Pull-in" while connected), or None. load_amps:
     battery current the backup load would need on battery alone, shown with the load.
@@ -313,10 +313,13 @@ def status_message(
         lines.append("❔ Стан бойлера невідомий (розетка Shelly не відповідає)")
     if manual_off:
         lines.append("✋ Ручний режим: бойлер вимкнено адміністратором")
-    elif wait_seconds and plug != "on" and condition == "ok" and not disconnected:
+    elif wait_seconds is not None and plug != "on" and condition == "ok" and not disconnected:
         # Only while this reading is in range: right after a dip the saved wait lags behind.
-        minutes = max(round(wait_seconds / 60), 1)
-        lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
+        if wait_seconds <= 0:  # the wait is over; the next cron run (≤ 1 min) switches on
+            lines.append("⏳ Напруга стабільна: бойлер увімкнеться протягом хвилини")
+        else:
+            minutes = max(round(wait_seconds / 60), 1)
+            lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
     elif plug == "off" and condition not in (None, "lost") and not disconnected:
         # E.g. 209 V after a low-voltage switch-off: "Світло є", yet the boiler stays off.
         until = switch_on_when(voltage, on_at, high_on, cooldown_minutes)
