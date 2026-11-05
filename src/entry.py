@@ -698,6 +698,7 @@ class Default(WorkerEntrypoint):
             "manual_off": await self.held_off(),
             "power": power,
             "wait_seconds": await self.cooldown_remaining(),
+            **self.reply_limits(),
         }
 
     async def cooldown_remaining(self):
