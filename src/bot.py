@@ -299,7 +299,9 @@ def status_message(
     if load is not None:
         line = f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт"
         if load_amps is not None and amps_limit:
-            line += f" (≈{load_amps:.0f} А з {amps_limit:.0f} А ліміту батареї)"
+            line += f" (≈{load_amps:.0f} А, {load_amps / amps_limit:.0%} від ліміту)"
+        elif load_amps is not None:
+            line += f" (≈{load_amps:.0f} А)"
         lines.append(line)
     if voltage is None:
         lines.append("⚠️ Автоматичний захист тимчасово не працює")
