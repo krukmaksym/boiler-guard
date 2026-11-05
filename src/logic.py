@@ -153,6 +153,7 @@ class Reading(NamedTuple):
     battery: float | None = None  # battery W, negative while charging
     relay: str | None = None  # grid relay text: "Pull-in" or "Break"
     problem: tuple | None = None
+    battery_voltage: float | None = None  # V
 
 
 def device_readings(
@@ -164,6 +165,7 @@ def device_readings(
     load_key="UPSLoadPower",
     battery_key="BatteryPower",
     relay_key="GridRelayStatus",
+    battery_voltage_key="BatteryVoltage",
     max_age_seconds=180,
 ):
     """A Reading from one device lookup; the functions above each return one field."""
@@ -178,7 +180,22 @@ def device_readings(
         battery=_reading(device, battery_key),
         relay=_text(device, relay_key),
         problem=problem,
+        battery_voltage=_reading(device, battery_voltage_key),
     )
+
+
+NOMINAL_BATTERY_VOLTS = 51.2  # a 16-cell LiFePO4 pack, when Deye doesn't report the voltage
+INVERTER_EFFICIENCY = 0.95  # battery W per backup-output W, roughly, at these loads
+
+
+def battery_amps(load_watts, battery_volts=None):
+    """Current the battery would supply for this backup load if the inverter ran on
+    battery alone (relay "Break"), or None when the load is unknown. Rounded up a
+    little by the inverter's losses, so it errs on the safe side."""
+    if load_watts is None:
+        return None
+    volts = battery_volts if battery_volts and battery_volts > 0 else NOMINAL_BATTERY_VOLTS
+    return max(load_watts, 0.0) / volts / INVERTER_EFFICIENCY
 
 
 def _fresh_device(data, sn, now, max_age_seconds):

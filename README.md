@@ -162,7 +162,9 @@ For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests
 Send `/status` in the chat and the bot replies within a minute (within seconds in
 [webhook mode](#instant-replies-telegram-webhook-optional)) with
 grid voltage, the boiler's real on/off state, its live power draw, battery charge,
-the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`),
+the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`) with
+the battery current it would need on battery alone against the inverter's discharge
+limit (`BATTERY_DISCHARGE_LIMIT_A`, keep it equal to "Max A Discharge"),
 whether the battery is charging or discharging and at what power (`BATTERY_POWER_KEY`,
 default `BatteryPower`, negative while charging) and whether protection is active. When grid is present but its voltage is out of
 range, or the inverter has disconnected itself from the grid, it says so, and

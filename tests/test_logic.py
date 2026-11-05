@@ -167,6 +167,15 @@ class GridRelayTest(unittest.TestCase):
         self.assertIsNone(logic.grid_relay(data, SN, NOW))
 
 
+class BatteryAmpsTest(unittest.TestCase):
+    def test_amps_from_the_real_voltage_with_losses(self):
+        self.assertAlmostEqual(logic.battery_amps(1930.0, 53.0), 1930 / 53 / 0.95)
+        self.assertAlmostEqual(logic.battery_amps(1930.0), 1930 / 51.2 / 0.95)  # voltage unknown
+        self.assertAlmostEqual(logic.battery_amps(1930.0, 0.0), 1930 / 51.2 / 0.95)
+        self.assertEqual(logic.battery_amps(-5.0, 53.0), 0.0)
+        self.assertIsNone(logic.battery_amps(None, 53.0))
+
+
 class CooldownTest(unittest.TestCase):
     def test_cooldown_left(self):
         self.assertEqual(logic.cooldown_left(None, NOW, 600), 600)
@@ -364,6 +373,7 @@ class DeviceReadingsTest(unittest.TestCase):
             {"key": "UPSLoadPower", "value": "640", "unit": "W"},
             {"key": "BatteryPower", "value": "-1200", "unit": "W"},
             {"key": "GridRelayStatus", "value": "Pull-in", "unit": ""},
+            {"key": "BatteryVoltage", "value": "56.39", "unit": "V"},
         ]
         responses = [
             with_load,
@@ -376,18 +386,15 @@ class DeviceReadingsTest(unittest.TestCase):
             None,
         ]
         for data in responses:
-            expected = (
-                logic.grid_voltage(data, SN, NOW),
-                logic.battery_soc(data, SN, NOW),
-                logic.backup_load(data, SN, NOW),
-                logic.battery_power(data, SN, NOW),
-                logic.grid_relay(data, SN, NOW),
-                logic.reading_problem(data, SN, NOW),
-            )
-            self.assertEqual(logic.device_readings(data, SN, NOW), expected)
-        self.assertEqual(
-            logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, -1200.0, "Pull-in", None)
-        )
+            reading = logic.device_readings(data, SN, NOW)
+            self.assertEqual(reading.voltage, logic.grid_voltage(data, SN, NOW))
+            self.assertEqual(reading.soc, logic.battery_soc(data, SN, NOW))
+            self.assertEqual(reading.load, logic.backup_load(data, SN, NOW))
+            self.assertEqual(reading.battery, logic.battery_power(data, SN, NOW))
+            self.assertEqual(reading.relay, logic.grid_relay(data, SN, NOW))
+            self.assertEqual(reading.problem, logic.reading_problem(data, SN, NOW))
+        expected = logic.Reading(223.2, 87.0, 640.0, -1200.0, "Pull-in", None, battery_voltage=56.39)
+        self.assertEqual(logic.device_readings(with_load, SN, NOW), expected)
 
 
 if __name__ == "__main__":

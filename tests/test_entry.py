@@ -301,6 +301,16 @@ class VoltageCooldownTest(EntryTestCase):
         self.assertEqual(reply, bot.AUTO_WAIT_OFF_GRID_MESSAGE)
         self.assertEqual(self.switched, [])
 
+    async def test_status_shows_battery_current_against_the_limit(self):
+        worker = self.worker()
+        run = {"voltage": 230.0, "load": 1930.0, "battery_voltage": 53.0}
+        snapshot = await worker.status_snapshot(run)
+        self.assertAlmostEqual(snapshot["load_amps"], 1930 / 53 / 0.95)
+        self.assertEqual(snapshot["amps_limit"], 80.0)
+        for bad in ("lots", "0", "nan"):
+            worker.env.BATTERY_DISCHARGE_LIMIT_A = bad
+            self.assertIsNone(worker.discharge_limit())
+
     async def test_no_cooldown_when_set_to_zero(self):
         worker = await self.low_voltage_off()
         worker.env.VOLTAGE_COOLDOWN_SECONDS = "0"

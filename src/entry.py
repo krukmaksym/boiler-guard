@@ -242,6 +242,15 @@ class Default(WorkerEntrypoint):
             raise ConfigError("need ON_VOLTAGE <= HIGH_ON_VOLTAGE <= HIGH_OFF_VOLTAGE")
         return values
 
+    def discharge_limit(self):
+        """BATTERY_DISCHARGE_LIMIT_A: the inverter's "Max A Discharge" setting, shown next
+        to the backup load in /status. Display only, so a bad value just hides it."""
+        try:
+            value = float(self.var("BATTERY_DISCHARGE_LIMIT_A", "80"))
+        except ValueError:
+            return None
+        return value if value > 0 and value == value else None
+
     def cooldown_seconds(self):
         """VOLTAGE_COOLDOWN_SECONDS: how long the voltage must stay in range before the
         boiler switches back on after a voltage switch-off (0 turns the wait off)."""
@@ -357,6 +366,7 @@ class Default(WorkerEntrypoint):
             load_key=load_key,
             battery_key=self.var("BATTERY_POWER_KEY", "BatteryPower"),
             relay_key=self.var("GRID_RELAY_KEY", "GridRelayStatus"),
+            battery_voltage_key=self.var("BATTERY_VOLTAGE_KEY", "BatteryVoltage"),
             max_age_seconds=max_age,
         )
 
@@ -566,6 +576,8 @@ class Default(WorkerEntrypoint):
             "battery": run.get("battery"),
             "relay": run.get("relay"),
             "load": run.get("load"),
+            "load_amps": logic.battery_amps(run.get("load"), run.get("battery_voltage")),
+            "amps_limit": self.discharge_limit(),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
             "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
             "manual_off": await self.held_off(),
