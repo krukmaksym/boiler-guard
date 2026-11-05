@@ -24,10 +24,15 @@ def _stub_runtime():
         def __init__(self, ctx=None, env=None):
             self.ctx, self.env = ctx, env
 
+    class DurableObject:
+        def __init__(self, ctx=None, env=None):
+            self.ctx, self.env = ctx, env
+
     async def fetch(*args, **kwargs):
         raise AssertionError("tests must not reach the network")
 
     workers.WorkerEntrypoint = WorkerEntrypoint
+    workers.DurableObject = DurableObject
     workers.Response = lambda body, status=200: (status, body)
     workers.fetch = fetch
     for name, module in {"js": js, "pyodide": pyodide, "pyodide.ffi": ffi, "workers": workers}.items():
@@ -58,6 +63,37 @@ class FakeKV:
         self.data.pop(key, None)
 
 
+class FakeStorage(FakeKV):
+    """A Durable Object's ctx.storage: same get/put/delete, any value type."""
+
+
+class FakeNamespace:
+    """A Durable Object namespace binding running the real PlugState on FakeStorage."""
+
+    def __init__(self, data=None, kv=None, migrated=True):
+        self.data = dict(data or {})
+        if migrated:
+            self.data[entry.MIGRATED_KEY] = "1"
+        ctx = types.SimpleNamespace(storage=FakeStorage())
+        ctx.storage.data = self.data
+        self.object = entry.PlugState(ctx, types.SimpleNamespace(STATE=kv))
+        self.names = []
+
+    def idFromName(self, name):  # noqa: N802 - the Workers API name
+        self.names.append(name)
+        return name
+
+    def get(self, object_id):
+        return self.object
+
+
+def split_state(state):
+    """(KV data, plug state data) from one dict of initial values."""
+    state = dict(state or {})
+    plug = {key: state.pop(key) for key in list(state) if key in entry.PLUG_KEYS}
+    return state, plug
+
+
 def shelly_status(output):
     return {"isok": True, "data": {"online": True, "device_status": {"switch:0": {"output": output}}}}
 
@@ -69,10 +105,13 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(sleep.stop)
 
     def worker(self, state=None, prod_state=None, plug=logic.OFF, voltage=230.0):
-        env = types.SimpleNamespace(STATE=FakeKV(state), SHELLY_CHANNEL="0", **SECRETS)
+        kv_data, plug_data = split_state(state)
+        env = types.SimpleNamespace(STATE=FakeKV(kv_data), SHELLY_CHANNEL="0", **SECRETS)
+        env.PLUG = FakeNamespace(plug_data, kv=env.STATE)
         if prod_state is not None:
-            env.PROD_STATE = FakeKV(prod_state)
+            env.PROD_PLUG = FakeNamespace(prod_state)
         worker = entry.Default(None, env)
+        worker.plug_data = env.PLUG.data  # the plug state, for assertions
         self.switched = []
         self.plug = plug
 
@@ -93,10 +132,10 @@ class ManualOnTest(EntryTestCase):
         """⛔ with grid present (no grid transition), then ✅ while Deye has no fresh data."""
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON)
         await worker.apply_control(logic.OFF, {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.HELD_ON)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.HELD_ON)
         reply = await worker.apply_control(logic.ON, {"voltage": None})
         self.assertEqual(reply, bot.AUTO_WAIT_MESSAGE)
-        self.assertNotIn(entry.MODE_KEY, worker.env.STATE.data)
+        self.assertNotIn(entry.MODE_KEY, worker.plug_data)
         self.assertEqual(self.switched, [logic.OFF])
         self.switched.clear()
         return worker
@@ -106,7 +145,7 @@ class ManualOnTest(EntryTestCase):
         outbox = []
         await worker.check({}, outbox, {})  # next cron run: fresh reading, grid present
         self.assertEqual(self.switched, [logic.ON])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.ON)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], logic.ON)
         self.assertEqual([m for m in outbox if m], [])  # grid didn't change: nothing to announce
 
     async def test_a_failed_switch_on_after_the_hold_is_reported_once(self):
@@ -116,7 +155,7 @@ class ManualOnTest(EntryTestCase):
         await worker.check(state, outbox, {})
         await worker.check(state, outbox, {})
         self.assertEqual([m for m in outbox if m], [entry.notify.RESUME_FAILED_MESSAGE])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.HELD_ON)  # retried
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.HELD_ON)  # retried
 
         worker.shelly = self.worker(plug=logic.OFF).shelly  # Shelly is back
         await worker.check(state, outbox, {})
@@ -127,7 +166,7 @@ class ManualOnTest(EntryTestCase):
         worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(0.0, soc=80.0, load=0.0))  # grid gone
         outbox = []
         await worker.check({}, outbox, {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.assertEqual(len([m for m in outbox if m and "Зникло світло" in m]), 1)
 
     async def test_hold_keeps_the_plug_off_without_polling_shelly(self):
@@ -139,7 +178,7 @@ class ManualOnTest(EntryTestCase):
     async def test_on_on_battery_keeps_the_off_desired_state(self):
         worker = self.worker({entry.MODE_KEY: logic.OFF, entry.DESIRED_KEY: logic.OFF})
         await worker.apply_control(logic.ON, {"voltage": 150.0, "desired": logic.OFF})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.OFF)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], logic.OFF)
         self.assertEqual(self.switched, [])
 
     async def test_on_with_grid_switches_on(self):
@@ -152,13 +191,13 @@ class ManualOnTest(EntryTestCase):
         worker = self.worker(plug=logic.ON)
         await worker.apply_control(logic.OFF, {})
         self.assertEqual(self.switched, [logic.OFF])
-        self.assertEqual(worker.env.STATE.data[entry.MODE_KEY], logic.OFF)
+        self.assertEqual(worker.plug_data[entry.MODE_KEY], logic.OFF)
         self.switched.clear()
-        worker.env.STATE.data[entry.DESIRED_KEY] = logic.OFF  # grid was gone, now it's back
+        worker.plug_data[entry.DESIRED_KEY] = logic.OFF  # grid was gone, now it's back
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.HELD_ON)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.HELD_ON)
         self.assertTrue(any(m and "вимкнули вручну" in m for m in outbox))
 
 
@@ -178,7 +217,7 @@ class ProductionHoldTest(EntryTestCase):
         )
         await worker.check({}, [], {})  # grid unchanged: only the hold enforcement runs
         self.assertEqual(self.switched, [logic.OFF])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.HELD_ON)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.HELD_ON)
 
     async def test_the_production_hold_does_not_poll_shelly_every_minute(self):
         state = {entry.DESIRED_KEY: entry.HELD_ON}
@@ -210,7 +249,7 @@ class VoltageCooldownTest(EntryTestCase):
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [logic.OFF])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.assertIn("протримається 10 хв", [m for m in outbox if m][0])
         return worker
 
@@ -223,8 +262,8 @@ class VoltageCooldownTest(EntryTestCase):
         self.at(worker, 230.0, 11)  # 10 min after it came back
         await worker.check({}, [], {})
         self.assertEqual(self.switched, [logic.OFF, logic.ON])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.ON)
-        self.assertNotIn(entry.ON_PENDING_KEY, worker.env.STATE.data)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], logic.ON)
+        self.assertNotIn(entry.ON_PENDING_KEY, worker.plug_data)
 
     async def test_a_dip_during_the_wait_restarts_it(self):
         worker = await self.low_voltage_off()
@@ -232,7 +271,7 @@ class VoltageCooldownTest(EntryTestCase):
         await worker.check({}, [], {})
         self.at(worker, 207.0, 6)  # in the dead band: not back in range
         await worker.check({}, [], {})
-        self.assertNotIn(entry.ON_PENDING_KEY, worker.env.STATE.data)
+        self.assertNotIn(entry.ON_PENDING_KEY, worker.plug_data)
         self.at(worker, 230.0, 7)
         await worker.check({}, [], {})
         self.at(worker, 230.0, 16)
@@ -257,7 +296,7 @@ class VoltageCooldownTest(EntryTestCase):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=6.0)
         state, outbox = {}, []
         await worker.check(state, outbox, {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.assertIn("протримається 10 хв", outbox[-1])
         self.at(worker, 221.0, 1)
         await worker.check(state, outbox, {})
@@ -270,12 +309,12 @@ class VoltageCooldownTest(EntryTestCase):
     async def test_an_old_plain_off_gets_the_cooldown(self):
         worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF, voltage=0.0)
         await worker.check({}, [], {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
 
     async def test_grid_back_but_too_low_after_an_outage_waits(self):
         worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF, voltage=190.0)
         await worker.check({}, [], {})
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
         self.at(worker, 230.0, 1)
         await worker.check({}, [], {})
         self.assertEqual(self.switched, [])
@@ -321,8 +360,8 @@ class VoltageCooldownTest(EntryTestCase):
         await worker.check({}, [], run)
         await worker.apply_control(logic.ON, run)
         self.assertEqual(self.switched, [logic.OFF, logic.ON])
-        self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], logic.ON)
-        self.assertNotIn(entry.ON_PENDING_KEY, worker.env.STATE.data)
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], logic.ON)
+        self.assertNotIn(entry.ON_PENDING_KEY, worker.plug_data)
 
     async def test_status_shows_the_wait(self):
         worker = await self.low_voltage_off()
@@ -331,6 +370,66 @@ class VoltageCooldownTest(EntryTestCase):
         self.at(worker, 230.0, 4)
         snapshot = await worker.status_snapshot({"voltage": 230.0})
         self.assertEqual(snapshot["wait_seconds"], 7 * 60)
+
+
+class PlugStateTest(EntryTestCase):
+    async def test_plug_state_lives_in_the_durable_object_not_kv(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=190.0)
+        await worker.check({}, [], {})  # low voltage: switch off, cooldown state saved
+        await worker.apply_control(logic.OFF, {})  # admin hold + verify window
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        self.assertEqual(worker.plug_data[entry.MODE_KEY], logic.OFF)
+        self.assertIn(entry.VERIFY_OFF_KEY, worker.plug_data)
+        self.assertFalse(entry.PLUG_KEYS & set(worker.env.STATE.data))  # nothing in KV
+        self.assertEqual(set(worker.env.PLUG.names), {entry.PLUG_OBJECT_NAME})
+
+    async def test_first_call_copies_the_kv_values_once(self):
+        kv = FakeKV(
+            {
+                entry.DESIRED_KEY: entry.HELD_ON,
+                entry.MODE_KEY: logic.OFF,
+                entry.VERIFY_OFF_KEY: "1",
+                entry.TOKEN_KEY: "not-plug-state",
+            }
+        )
+        namespace = FakeNamespace(kv=kv, migrated=False)
+        store = namespace.get(namespace.idFromName("plug"))
+        self.assertEqual(await store.get_value(entry.DESIRED_KEY), entry.HELD_ON)
+        self.assertEqual(await store.get_value(entry.MODE_KEY), logic.OFF)
+        self.assertEqual(await store.get_value(entry.VERIFY_OFF_KEY), "1")
+        self.assertIn(entry.VERIFY_OFF_KEY + entry.EXPIRES_SUFFIX, namespace.data)  # window restarts
+        self.assertNotIn(entry.TOKEN_KEY, namespace.data)
+        self.assertEqual(kv.data[entry.DESIRED_KEY], entry.HELD_ON)  # KV kept for a rollback
+        await store.put_value(entry.DESIRED_KEY, logic.ON)
+        kv.data[entry.DESIRED_KEY] = logic.OFF
+        self.assertEqual(await store.get_value(entry.DESIRED_KEY), logic.ON)  # copied only once
+
+    async def test_values_expire_like_kv_ttl(self):
+        namespace = FakeNamespace()
+        store = namespace.get("plug")
+        with mock.patch.object(entry.time, "time", return_value=1000.0):
+            await store.put_value(entry.VERIFY_OFF_KEY, "1", 180)
+            await store.put_value(entry.DESIRED_KEY, logic.ON)
+        with mock.patch.object(entry.time, "time", return_value=1179.0):
+            self.assertEqual(await store.get_value(entry.VERIFY_OFF_KEY), "1")
+        with mock.patch.object(entry.time, "time", return_value=1180.0):
+            self.assertEqual(await store.get_value(entry.VERIFY_OFF_KEY), "")
+            self.assertEqual(await store.get_value(entry.DESIRED_KEY), logic.ON)  # no expiry
+        self.assertNotIn(entry.VERIFY_OFF_KEY, namespace.data)
+        await store.put_value(entry.VERIFY_OFF_KEY, "1")  # a later put without ttl keeps it
+        self.assertNotIn(entry.VERIFY_OFF_KEY + entry.EXPIRES_SUFFIX, namespace.data)
+
+    async def test_only_plug_keys_are_accepted(self):
+        store = FakeNamespace().get("plug")
+        for call in (store.get_value(entry.TOKEN_KEY), store.put_value("anything", "x")):
+            with self.assertRaises(ValueError):
+                await call
+
+    async def test_missing_binding_is_a_config_error(self):
+        worker = self.worker()
+        del worker.env.PLUG
+        with self.assertRaises(entry.ConfigError):
+            await worker.check({}, [], {})
 
 
 class ConfigCheckTest(EntryTestCase):
@@ -360,7 +459,7 @@ class ConfigCheckTest(EntryTestCase):
         for action in (logic.ON, logic.OFF):
             self.assertEqual(await worker.apply_control(action, {}), bot.CONFIG_FAILED_MESSAGE)
         self.assertEqual(self.switched, [])
-        self.assertEqual(worker.env.STATE.data[entry.MODE_KEY], logic.OFF)  # nothing changed
+        self.assertEqual(worker.plug_data[entry.MODE_KEY], logic.OFF)  # nothing changed
 
     async def test_corrupted_offset_does_not_stop_polling(self):
         worker = self.worker({entry.OFFSET_KEY: "garbage"})

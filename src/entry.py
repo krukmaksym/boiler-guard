@@ -1,8 +1,9 @@
 """Boiler guard: switch the Shelly plug off when the Deye inverter loses grid.
 
-Runs on a cron trigger. Credentials come from Worker Secrets; the STATE KV
-namespace only holds the auto-refreshed Deye token, the last desired plug state,
-the admin's manual-off flag, notification dedup state and the Telegram update
+Runs on a cron trigger. Credentials come from Worker Secrets. The plug state (the
+last desired state, the admin's manual-off flags, the switch-on cooldown) lives in
+the PlugState Durable Object, which is strongly consistent; the STATE KV namespace
+only holds the auto-refreshed Deye token, notification dedup state and the Telegram update
 offset. Optional Telegram notifications, /status replies and /boiler buttons run
 after the plug logic and can never block or break it.
 
@@ -24,7 +25,7 @@ from urllib.parse import urlencode, urlparse
 
 from js import AbortSignal, Object
 from pyodide.ffi import to_js
-from workers import Response, WorkerEntrypoint, fetch
+from workers import DurableObject, Response, WorkerEntrypoint, fetch
 
 import bot
 import logic
@@ -102,6 +103,76 @@ async def http_json(url, *, method="GET", headers=None, body=None, timeout_ms=RE
 
 def log(message):
     print(f"boiler-guard: {message}")
+
+
+# The plug state is kept in one Durable Object instead of KV: KV is eventually
+# consistent (a read elsewhere can return a value up to ~60 s old), which could end
+# the cooldown early or miss an admin's hold. Everything else stays in KV.
+PLUG_KEYS = frozenset({DESIRED_KEY, MODE_KEY, VERIFY_OFF_KEY, ON_PENDING_KEY})
+PLUG_OBJECT_NAME = "plug"  # one object per Worker: there is one plug
+MIGRATED_KEY = "migrated_from_kv"  # set once the KV values were copied over
+EXPIRES_SUFFIX = "|expires"  # epoch seconds after which a value counts as gone
+
+
+class PlugState(DurableObject):
+    """The plug state as a tiny store: get_value, put_value (with an optional expiry,
+    like KV's TTL) and delete_value, for the PLUG_KEYS only. Its first call copies the
+    values that KV held before this existed (KV keeps them, so a rollback still works)."""
+
+    def __init__(self, ctx, env):
+        self.ctx = ctx
+        self.env = env
+
+    @staticmethod
+    def _check(key):
+        if key not in PLUG_KEYS:
+            raise ValueError(f"not a plug state key: {key!r}")
+
+    async def _ready(self):
+        storage = self.ctx.storage
+        if await storage.get(MIGRATED_KEY):
+            return
+        kv = getattr(self.env, "STATE", None)
+        for key in sorted(PLUG_KEYS):
+            value = await kv.get(key) if kv is not None else None
+            if isinstance(value, str) and value and not await storage.get(key):
+                await storage.put(key, value)
+                if key == VERIFY_OFF_KEY:  # KV's TTL doesn't copy over: restart the window
+                    await storage.put(key + EXPIRES_SUFFIX, time.time() + VERIFY_OFF_SECONDS)
+        await storage.put(MIGRATED_KEY, "1")
+
+    async def get_value(self, key):
+        """The value, or "" when it is missing or expired."""
+        self._check(key)
+        await self._ready()
+        storage = self.ctx.storage
+        expires = await storage.get(key + EXPIRES_SUFFIX)
+        if isinstance(expires, (int, float)) and time.time() >= expires:
+            await self.delete_value(key)
+            return ""
+        value = await storage.get(key)
+        return value if isinstance(value, str) else ""
+
+    async def put_value(self, key, value, ttl=0):
+        self._check(key)
+        await self._ready()
+        storage = self.ctx.storage
+        await storage.put(key, str(value))
+        if ttl:
+            await storage.put(key + EXPIRES_SUFFIX, time.time() + float(ttl))
+        else:
+            await storage.delete(key + EXPIRES_SUFFIX)
+
+    async def delete_value(self, key):
+        self._check(key)
+        await self._ready()
+        await self.ctx.storage.delete(key)
+        await self.ctx.storage.delete(key + EXPIRES_SUFFIX)
+
+
+def plug_stub(namespace):
+    """The PlugState object behind a Durable Object namespace binding."""
+    return namespace.get(namespace.idFromName(PLUG_OBJECT_NAME))
 
 
 class Default(WorkerEntrypoint):
@@ -259,30 +330,49 @@ class Default(WorkerEntrypoint):
         value = await self.env.STATE.get(key)
         return value if isinstance(value, str) and value else None
 
+    # --- plug state (Durable Object) -------------------------------------
+
+    def plug(self):
+        namespace = getattr(self.env, "PLUG", None)
+        if namespace is None:
+            raise ConfigError("missing the PLUG Durable Object binding (see wrangler.toml)")
+        return plug_stub(namespace)
+
+    async def state_get(self, key):
+        value = await self.plug().get_value(key)
+        return value if isinstance(value, str) and value else None
+
+    async def state_put(self, key, value, ttl=None):
+        await self.plug().put_value(key, value, int(ttl or 0))
+
+    async def state_delete(self, key):
+        await self.plug().delete_value(key)
+
     async def prod_held_off(self):
         """Test Worker only: True while production's admin holds the boiler off. Both
         Workers switch the same real plug, so the test one must honour that hold too.
-        Read from the PROD_STATE binding (env.test only); never written."""
-        prod = getattr(self.env, "PROD_STATE", None)
+        Read from production's PlugState through the PROD_PLUG binding (env.test only);
+        never written."""
+        prod = getattr(self.env, "PROD_PLUG", None)
         if prod is None:
             return False
-        value = await prod.get(MODE_KEY)
+        value = await plug_stub(prod).get_value(MODE_KEY)
         return isinstance(value, str) and value == logic.OFF
 
     async def held_off(self):
         """True while an admin holds the boiler off (here or, for the test Worker, in production)."""
-        return await self.kv_get(MODE_KEY) == logic.OFF or await self.prod_held_off()
+        return await self.state_get(MODE_KEY) == logic.OFF or await self.prod_held_off()
 
     async def saved_desired(self):
         """(raw KV value, desired state it stands for): HELD_ON counts as "on",
         COOLDOWN_OFF as "off"."""
-        saved = await self.kv_get(DESIRED_KEY)
+        saved = await self.state_get(DESIRED_KEY)
         return saved, {HELD_ON: logic.ON, COOLDOWN_OFF: logic.OFF}.get(saved, saved)
 
     async def clear_on_pending(self):
         """The voltage left the range again (or the boiler is back on): the wait restarts."""
-        if await self.kv_get(ON_PENDING_KEY):
-            await self.env.STATE.delete(ON_PENDING_KEY)
+        if await self.state_get(ON_PENDING_KEY):
+            await self.state_delete(ON_PENDING_KEY)
 
     async def kv_put(self, key, value, ttl=None):
         if ttl:
@@ -580,7 +670,7 @@ class Default(WorkerEntrypoint):
         has to stay there), or None when the boiler isn't waiting for that."""
         if (await self.saved_desired())[0] != COOLDOWN_OFF:
             return None
-        since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
+        since = logic.parse_time(await self.state_get(ON_PENDING_KEY))
         if since is None:
             return None
         try:
@@ -657,15 +747,15 @@ class Default(WorkerEntrypoint):
                 log(f"admin control: Shelly failed: {type(exc).__name__}")
                 return bot.CONTROL_FAILED_MESSAGE
         if action == logic.OFF:
-            await self.kv_put(MODE_KEY, logic.OFF)
-            await self.kv_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
+            await self.state_put(MODE_KEY, logic.OFF)
+            await self.state_put(VERIFY_OFF_KEY, "1", ttl=VERIFY_OFF_SECONDS)
             if (await self.saved_desired())[0] == logic.ON:
-                await self.kv_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
+                await self.state_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
         else:
-            await self.env.STATE.delete(MODE_KEY)
+            await self.state_delete(MODE_KEY)
             if target == logic.ON and (await self.saved_desired())[0] == COOLDOWN_OFF:
                 # The admin switched on during the voltage cooldown: that ends it.
-                await self.kv_put(DESIRED_KEY, logic.ON)
+                await self.state_put(DESIRED_KEY, logic.ON)
                 await self.clear_on_pending()
         off_grid = logic.relay_open(run.get("relay")) is True
         return bot.control_message(action, target, switched, voltage=run.get("voltage"), off_grid=off_grid)
@@ -688,9 +778,9 @@ class Default(WorkerEntrypoint):
         The test Worker also enforces production's hold once after saving "on" (it may
         have switched on just before production's ⛔), then saves HELD_ON so it doesn't
         poll the shared Shelly account every minute for the rest of the hold."""
-        verifying = await self.kv_get(VERIFY_OFF_KEY) and await self.kv_get(MODE_KEY) == logic.OFF
+        verifying = await self.state_get(VERIFY_OFF_KEY) and await self.state_get(MODE_KEY) == logic.OFF
         prod_race = (
-            not verifying and await self.prod_held_off() and await self.kv_get(DESIRED_KEY) == logic.ON
+            not verifying and await self.prod_held_off() and await self.state_get(DESIRED_KEY) == logic.ON
         )
         if not (verifying or prod_race):
             return
@@ -704,7 +794,7 @@ class Default(WorkerEntrypoint):
                 run["plug"] = logic.OFF
                 log("re-applied the admin's manual off: the plug was on while held off")
             if prod_race and actual is not None:
-                await self.kv_put(DESIRED_KEY, HELD_ON)
+                await self.state_put(DESIRED_KEY, HELD_ON)
         except Exception as exc:  # retried on the next run while the window lasts
             log(f"manual-off check failed: {type(exc).__name__}")
 
@@ -731,17 +821,17 @@ class Default(WorkerEntrypoint):
         back_since = None  # when the voltage came back in range after a switch-off
         if desired == logic.ON and saved == COOLDOWN_OFF:
             now = time.time()
-            back_since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
+            back_since = logic.parse_time(await self.state_get(ON_PENDING_KEY))
             if logic.cooldown_left(back_since, now, cooldown) > 0:
                 if back_since is None:
-                    await self.kv_put(ON_PENDING_KEY, str(now))
+                    await self.state_put(ON_PENDING_KEY, str(now))
                 log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
                 await self.enforce_hold(secrets, channel, run)
                 return
         if desired == logic.OFF and saved == COOLDOWN_OFF:
             await self.clear_on_pending()
         elif desired == logic.OFF and saved == logic.OFF:
-            await self.kv_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
+            await self.state_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.
         resume = saved == HELD_ON and desired == logic.ON and not await self.held_off()
         if desired is None or (desired == previous and not resume):
@@ -777,9 +867,9 @@ class Default(WorkerEntrypoint):
             log(f"grid {voltage:.1f}V: plug already {actual}" + (" (held off by admin)" if held else ""))
 
         if held:
-            await self.kv_put(DESIRED_KEY, HELD_ON)
+            await self.state_put(DESIRED_KEY, HELD_ON)
         else:
-            await self.kv_put(DESIRED_KEY, COOLDOWN_OFF if desired == logic.OFF else desired)
+            await self.state_put(DESIRED_KEY, COOLDOWN_OFF if desired == logic.OFF else desired)
         if saved == COOLDOWN_OFF and desired == logic.ON:
             await self.clear_on_pending()
         if resume:

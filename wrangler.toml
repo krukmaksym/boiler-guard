@@ -12,13 +12,23 @@ preview_urls = false
 [triggers]
 crons = ["* * * * *"]
 
-# Holds the auto-refreshed Deye token, the last desired plug state, the admin's
-# manual-off flag, notification dedup state and Telegram bookkeeping (update offset,
-# webhook replay guard, status cooldowns).
+# Holds the auto-refreshed Deye token, notification dedup state and Telegram
+# bookkeeping (update offset, webhook replay guard, status cooldowns). The plug state
+# lived here too until PlugState took it over; those old values are left in place.
 # Credentials live in Worker Secrets (see scripts/upload-secrets.sh).
 [[kv_namespaces]]
 binding = "STATE"
 id = "ab7e5c69f89f42c7af5243d5de4f6c41"
+
+# The plug state (desired state, the admin's hold, the switch-on cooldown): a
+# strongly consistent Durable Object (src/entry.py PlugState), one object per Worker.
+[[durable_objects.bindings]]
+name = "PLUG"
+class_name = "PlugState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PlugState"]
 
 # Non-secret settings.
 [vars]
@@ -61,12 +71,22 @@ crons = ["* * * * *"]
 binding = "STATE"
 id = "9f2e8f04da484c3abd920fa5945e718b"
 
-# Production's namespace, read only for its manual-off hold (src/entry.py
+# The test Worker's own plug state (durable_objects and migrations are not inherited).
+[[env.test.durable_objects.bindings]]
+name = "PLUG"
+class_name = "PlugState"
+
+# Production's plug state, read only for its manual-off hold (src/entry.py
 # prod_held_off): both Workers switch the same real plug, so the test one must
 # never switch on a boiler the production admin holds off. The code never writes it.
-[[env.test.kv_namespaces]]
-binding = "PROD_STATE"
-id = "ab7e5c69f89f42c7af5243d5de4f6c41"
+[[env.test.durable_objects.bindings]]
+name = "PROD_PLUG"
+class_name = "PlugState"
+script_name = "boiler-guard"
+
+[[env.test.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PlugState"]
 
 [env.test.vars]
 ENVIRONMENT = "test"  # makes EXPIRES_AT mandatory: without it the Worker never runs
