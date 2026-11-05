@@ -17,10 +17,21 @@ Every minute:
      than `MAX_DATA_AGE_SECONDS`, do nothing. The plug keeps its current state.
    - Only the grid key is used: `LoadVoltage*`/`ACVoltage*` are the inverter's own
      output and stay at ~230 V on battery.
-2. Compute the desired plug state with hysteresis:
-   - `>= ON_VOLTAGE` (210 V) → on
-   - `< OFF_VOLTAGE` (205 V) → off
+2. Compute the desired plug state with hysteresis on both sides:
+   - `ON_VOLTAGE` (210 V) to `HIGH_ON_VOLTAGE` (255 V) → on
+   - `< OFF_VOLTAGE` (205 V) or `> HIGH_OFF_VOLTAGE` (265 V) → off. Grid can be present
+     while the inverter has opened its grid relay because the voltage is out of its
+     range and runs the house from the battery. Set `HIGH_OFF_VOLTAGE` to the
+     inverter's "Grid V High (Normal)" and `HIGH_ON_VOLTAGE` to "Grid V High
+     (Reconnect)"; keep `OFF_VOLTAGE`/`ON_VOLTAGE` at or above its low limits.
    - in between → keep the previous desired state
+   - `GridRelayStatus` (`GRID_RELAY_KEY`) `Break` → off, whatever the voltage: the
+     inverter has disconnected itself from the grid (`Pull-in` while connected). Without
+     that key, or with any other value, the voltage limits above stand in for it.
+   - after any switch-off, the boiler switches back on only once the voltage has
+     stayed in the "on" range for `VOLTAGE_COOLDOWN_SECONDS` (600 s); any dip restarts
+     the wait. This covers outages too, since a short outage and reconnect flaps the
+     boiler the same way.
 3. If the desired state is unchanged since the last run, stop. No Shelly call
    (except for 3 minutes after an admin's manual off, see
    [`/boiler`](#controlling-the-boiler-boiler-admin-only)).
@@ -44,8 +55,9 @@ expires or is rejected.
   are refused before any request is made, with a test for each.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
   KV (`STATE`) holds only the derived Deye token, a login back-off flag, the
-  `on`/`off` state, the admin's manual-off flags, notification dedup state and
-  Telegram bookkeeping (update offset, webhook replay guard, cooldowns).
+  `on`/`off` state, the voltage-cooldown start time, the admin's manual-off flags,
+  notification dedup state and Telegram bookkeeping (update offset, webhook replay
+  guard, cooldowns).
 - The only HTTP surface is the optional Telegram webhook (see below). Without
   `TELEGRAM_WEBHOOK_SECRET` every request gets a 404; preview URLs are off.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
@@ -114,11 +126,13 @@ Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
-- grid is lost and the boiler is switched off, and when grid returns and it's back on
-  (saying how long the outage lasted);
-- grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) and the boiler is switched off,
-  and when it recovers to `ON_VOLTAGE`, with how long it lasted (below 100 V counts as an
-  outage, not low voltage);
+- grid is lost and the boiler is switched off, and when it's back on after the
+  cooldown (saying how long the outage lasted);
+- grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) or rises above
+  `HIGH_OFF_VOLTAGE` and the boiler is switched off, and when it switches back on after
+  the cooldown, with how long it lasted (below 100 V counts as an outage, not low voltage);
+- the inverter disconnects itself from the grid (`GridRelayStatus` = `Break`) while grid
+  is present, and when it has reconnected and the boiler is back on after the cooldown;
 - Deye has given no trustworthy data for 5 minutes (protection paused), with the likely
   cause (Deye unreachable, inverter offline, stale upload, ...), and on recovery with how
   long the gap lasted. Every such run also logs the exact cause, e.g.
@@ -148,8 +162,11 @@ For local tests, `--var NOTIFY_PREFIX:"🧪 ТЕСТ: "` marks messages as tests
 Send `/status` in the chat and the bot replies within a minute (within seconds in
 [webhook mode](#instant-replies-telegram-webhook-optional)) with
 grid voltage, the boiler's real on/off state, its live power draw, battery charge,
-the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`)
-and whether protection is active. `/start` or `/help` explain what it does.
+the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`),
+whether the battery is charging or discharging and at what power (`BATTERY_POWER_KEY`,
+default `BatteryPower`, negative while charging) and whether protection is active. When grid is present but its voltage is out of
+range, or the inverter has disconnected itself from the grid, it says so, and
+during the voltage cooldown it says roughly when the boiler will switch back on. `/start` or `/help` explain what it does.
 
 The power line tells whether the boiler is actually heating: from 20 W up it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is

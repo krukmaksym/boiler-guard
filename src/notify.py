@@ -7,13 +7,13 @@ run costs one KV read and writes only when something changes.
 import re
 from urllib.parse import urlparse
 
+import logic
+
 TELEGRAM_API = "https://api.telegram.org"
 _TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
 BLIND_AFTER_SECONDS = 5 * 60
 ERROR_REPEAT_SECONDS = 60 * 60  # the same error is re-sent at most hourly
-# Below this the grid is gone; between this and OFF_VOLTAGE it is present but too low.
-GRID_LOST_BELOW = 100.0
 
 
 class NotifyError(Exception):
@@ -60,33 +60,87 @@ def duration_text(seconds):
 # --- messages (Ukrainian, written for the whole family) ----------------------
 
 
-def grid_message(desired, voltage, switched, held=False, lasted=None):
-    """lasted: seconds since the switch-off, named when the grid returns (if known)."""
-    if desired == "off":
-        tail = "Бойлер вимкнено, щоб не розряджати батарею." if switched else "Бойлер уже був вимкнений."
-        return f"⚡️ Зникло світло (мережа {_v(voltage)}). {tail}"
+def _on_tail(switched, held, waited):
     if held:
-        tail = "Бойлер лишається вимкненим: його вимкнули вручну."
-    else:
-        tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
+        return "Бойлер лишається вимкненим: його вимкнули вручну."
+    if not switched:
+        return "Бойлер уже увімкнений."
+    if waited:
+        return f"Напруга стабільна вже {duration_text(waited)}, тож бойлер знову увімкнено."
+    return "Бойлер знову увімкнено."
+
+
+def grid_message(desired, voltage, switched, held=False, lasted=None, cooldown_minutes=0, waited=None):
+    """lasted: how long the grid was gone, named when it returns (if known). waited:
+    how long the voltage then stayed in range before the boiler switched back on."""
+    if desired == "off":
+        if switched:
+            tail = (
+                "Бойлер вимкнено, щоб не розряджати батарею; він увімкнеться, коли світло "
+                f"повернеться{_cooldown_tail(cooldown_minutes)}."
+            )
+        else:
+            tail = "Бойлер уже був вимкнений."
+        return f"⚡️ Зникло світло (мережа {_v(voltage)}). {tail}"
+    tail = _on_tail(switched, held, waited)
     gap = f" Світла не було {duration_text(lasted)}." if lasted is not None else ""
     return f"✅ Світло повернулося (мережа {_v(voltage)}).{gap} {tail}"
 
 
-def low_voltage_message(voltage, switched, off_below, on_at):
+INVERTER_ISLAND_NOTE = "Інвертор відключається від мережі й живить дім від батареї."
+
+
+def _cooldown_tail(cooldown_minutes):
+    return f" і протримається {cooldown_minutes} хв" if cooldown_minutes else ""
+
+
+def low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes=0):
     """Grid is present but below OFF_VOLTAGE. One decimal: 204.6 V must not read as 205 V."""
     head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В)."
     if not switched:
         return f"{head} Бойлер уже був вимкнений."
-    return f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В."
+    return (
+        f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В"
+        f"{_cooldown_tail(cooldown_minutes)}."
+    )
 
 
-def voltage_restored_message(voltage, switched, held=False, lasted=None):
-    if held:
-        tail = "Бойлер лишається вимкненим: його вимкнули вручну."
-    else:
-        tail = "Бойлер знову увімкнено." if switched else "Бойлер уже увімкнений."
-    gap = f" Низька напруга трималася {duration_text(lasted)}." if lasted is not None else ""
+def high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes=0, on_grid=False):
+    """Grid is present but above HIGH_OFF_VOLTAGE. on_grid: Deye says the inverter's
+    grid relay is still closed, so the note that it disconnects is left out."""
+    head = f"📈 Висока напруга в мережі: {voltage:.1f} В (поріг {high_off:.0f} В)."
+    if not on_grid:
+        head = f"{head} {INVERTER_ISLAND_NOTE}"
+    if not switched:
+        return f"{head} Бойлер уже був вимкнений."
+    return (
+        f"{head} Бойлер вимкнено; він увімкнеться, коли напруга опуститься до {high_on:.0f} В"
+        f"{_cooldown_tail(cooldown_minutes)}."
+    )
+
+
+def disconnected_message(voltage, switched, cooldown_minutes=0):
+    """Grid present, but the inverter has opened its grid relay."""
+    head = f"⚠️ Інвертор відключився від мережі (мережа {voltage:.1f} В) і живить дім від батареї."
+    if not switched:
+        return f"{head} Бойлер уже був вимкнений."
+    return (
+        f"{head} Бойлер вимкнено; він увімкнеться, коли інвертор знову підключиться до мережі"
+        f"{_cooldown_tail(cooldown_minutes)}."
+    )
+
+
+def reconnected_message(voltage, switched, held=False, lasted=None, waited=None):
+    gap = f" Відключення тривало {duration_text(lasted)}." if lasted is not None else ""
+    return (
+        f"✅ Інвертор знову підключився до мережі ({voltage:.1f} В).{gap} {_on_tail(switched, held, waited)}"
+    )
+
+
+def voltage_restored_message(voltage, switched, held=False, lasted=None, high=False, waited=None):
+    tail = _on_tail(switched, held, waited)
+    kind = "Висока" if high else "Низька"
+    gap = f" {kind} напруга трималася {duration_text(lasted)}." if lasted is not None else ""
     return f"✅ Напруга в мережі відновилася ({voltage:.1f} В).{gap} {tail}"
 
 
@@ -196,35 +250,67 @@ def on_resumed(state):
 
 
 def on_switched(
-    state, previous, desired, voltage, switched, held=False, off_below=205.0, on_at=210.0, now=None
+    state,
+    previous,
+    desired,
+    voltage,
+    switched,
+    held=False,
+    off_below=205.0,
+    on_at=210.0,
+    now=None,
+    high_off=265.0,
+    high_on=255.0,
+    cooldown_minutes=0,
+    back_since=None,
+    disconnected=None,
 ):
     """Desired state changed and was applied. Silent on the very first run (no previous).
     held: grid is back but the admin switched the boiler off by hand, so it stays off.
-    A switch-off with grid still present (low voltage) is remembered, so the switch-on
-    after it says the voltage recovered rather than that the grid came back. The
-    switch-off time is remembered too, so the switch-on says how long it lasted."""
+    A switch-off with grid still present (voltage too low or too high) is remembered,
+    so the switch-on after it says the voltage recovered rather than that the grid
+    came back. The switch-off time is remembered too, so the switch-on says how long
+    it lasted. cooldown_minutes: how long the voltage must stay in range before the
+    boiler switches back on, named in the switch-off message. back_since: when the
+    voltage came back in range (the switch-on waited from then), if known.
+    disconnected: the inverter's grid relay was open (True), closed (False) or not
+    reported (None) at the switch-off."""
     state.pop("switch_failed", None)
     if desired == "off":
         if now is not None:
             state["off_since"] = now
-        low = voltage >= GRID_LOST_BELOW
-        if low:
-            state["low_voltage"] = True
-        else:
-            state.pop("low_voltage", None)
+        condition = logic.grid_condition(voltage, off_below, high_off)
+        if disconnected and condition != "lost":
+            condition = "relay"
+        for flag in ("low_voltage", "high_voltage", "relay_voltage"):
+            state.pop(flag, None)
+        if condition in ("low", "high", "relay"):
+            state[f"{condition}_voltage"] = True
         if previous is None:
             return None
-        if low:
-            return low_voltage_message(voltage, switched, off_below, on_at)
-        return grid_message(desired, voltage, switched)
+        if condition == "relay":
+            return disconnected_message(voltage, switched, cooldown_minutes)
+        if condition == "low":
+            return low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes)
+        if condition == "high":
+            return high_voltage_message(
+                voltage, switched, high_off, high_on, cooldown_minutes, on_grid=disconnected is False
+            )
+        return grid_message(desired, voltage, switched, cooldown_minutes=cooldown_minutes)
     low = state.pop("low_voltage", False)
+    high = state.pop("high_voltage", False)
+    relay = state.pop("relay_voltage", False)
     since = state.pop("off_since", None)
     if previous is None:
         return None
-    lasted = now - since if now is not None and since is not None else None
-    if low:
-        return voltage_restored_message(voltage, switched, held, lasted)
-    return grid_message(desired, voltage, switched, held, lasted)
+    back = back_since if back_since is not None else now
+    lasted = back - since if back is not None and since is not None else None
+    waited = now - back_since if now is not None and back_since is not None else None
+    if relay:
+        return reconnected_message(voltage, switched, held, lasted, waited)
+    if low or high:
+        return voltage_restored_message(voltage, switched, held, lasted, high=high, waited=waited)
+    return grid_message(desired, voltage, switched, held, lasted, waited=waited)
 
 
 def on_error(state, signature, detail, now):

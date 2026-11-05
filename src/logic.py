@@ -2,6 +2,7 @@
 
 import math
 import re
+from typing import NamedTuple
 from urllib.parse import urlencode, urlparse
 
 ON = "on"
@@ -94,17 +95,23 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     and stay ~230V on battery, so they must never be mistaken for grid.
     None covers: failed response, SN missing, inverter offline, stale or missing reading.
     """
-    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[0]
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds).voltage
 
 
 def battery_soc(data, sn, now, key="SOC", max_age_seconds=180):
     """Battery state of charge (%) from the same response, or None."""
-    return device_readings(data, sn, now, soc_key=key, max_age_seconds=max_age_seconds)[1]
+    return device_readings(data, sn, now, soc_key=key, max_age_seconds=max_age_seconds).soc
 
 
 def backup_load(data, sn, now, key="UPSLoadPower", max_age_seconds=180):
     """Power (W) the inverter is feeding to its backup (UPS) output, or None."""
-    return device_readings(data, sn, now, load_key=key, max_age_seconds=max_age_seconds)[2]
+    return device_readings(data, sn, now, load_key=key, max_age_seconds=max_age_seconds).load
+
+
+def battery_power(data, sn, now, key="BatteryPower", max_age_seconds=180):
+    """Battery power (W) from the same response, or None. Deye's sign: negative while
+    charging, positive while discharging."""
+    return device_readings(data, sn, now, battery_key=key, max_age_seconds=max_age_seconds).battery
 
 
 def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
@@ -114,19 +121,64 @@ def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     "offline" (Deye marks the inverter offline), "stale" (no fresh upload),
     "no_value" (the voltage key is missing or not a number).
     """
-    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[3]
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds).problem
+
+
+def grid_relay(data, sn, now, key="GridRelayStatus", max_age_seconds=180):
+    """The inverter's grid relay status text (e.g. "Pull-in"), or None."""
+    return device_readings(data, sn, now, relay_key=key, max_age_seconds=max_age_seconds).relay
+
+
+# What Deye reports for the inverter's grid relay: "Pull-in" while connected to the
+# grid, "Break" once it has disconnected itself.
+RELAY_STATES = {"pull-in": False, "break": True}
+
+
+def relay_open(status):
+    """True when the inverter has disconnected itself from the grid ("Break"), False
+    while connected ("Pull-in"), None when not reported or an unknown value (then the
+    voltage limits decide, so an odd value can't keep the boiler off)."""
+    if not isinstance(status, str):
+        return None
+    return RELAY_STATES.get(status.strip().lower())
+
+
+class Reading(NamedTuple):
+    """What one Deye /device/latest lookup gives. Only voltage drives the plug; the
+    rest is shown in /status. problem: (code, log detail) when voltage is None."""
+
+    voltage: float | None = None
+    soc: float | None = None  # battery %
+    load: float | None = None  # backup output W
+    battery: float | None = None  # battery W, negative while charging
+    relay: str | None = None  # grid relay text: "Pull-in" or "Break"
+    problem: tuple | None = None
 
 
 def device_readings(
-    data, sn, now, key="GridVoltageL1L2", soc_key="SOC", load_key="UPSLoadPower", max_age_seconds=180
+    data,
+    sn,
+    now,
+    key="GridVoltageL1L2",
+    soc_key="SOC",
+    load_key="UPSLoadPower",
+    battery_key="BatteryPower",
+    relay_key="GridRelayStatus",
+    max_age_seconds=180,
 ):
-    """(grid voltage, battery %, backup load W, problem) from one device lookup; the
-    functions above each return one of these."""
+    """A Reading from one device lookup; the functions above each return one field."""
     device, problem = _fresh_device(data, sn, now, max_age_seconds)
     voltage = _reading(device, key)
     if problem is None and voltage is None:
         problem = ("no_value", f"no {key} value")
-    return voltage, _reading(device, soc_key), _reading(device, load_key), problem
+    return Reading(
+        voltage=voltage,
+        soc=_reading(device, soc_key),
+        load=_reading(device, load_key),
+        battery=_reading(device, battery_key),
+        relay=_text(device, relay_key),
+        problem=problem,
+    )
 
 
 def _fresh_device(data, sn, now, max_age_seconds):
@@ -168,6 +220,19 @@ def _reading(device, key):
     return None
 
 
+def _text(device, key):
+    """The key's value as a short string, else None."""
+    if device is None:
+        return None
+    for item in _dicts(device.get("dataList")):
+        if item.get("key") == key:
+            value = item.get("value")
+            if not isinstance(value, str):
+                return None
+            return value.strip()[:40] or None
+    return None
+
+
 def _dicts(value):
     """The dict items of a list from an upstream response; anything else is skipped,
     so an odd response reads as "no data" instead of crashing the run."""
@@ -195,15 +260,55 @@ def _channel_status(data, channel):
     return _dict(status.get(f"switch:{channel}")), gen1("relays"), gen1("meters")
 
 
-def desired_state(voltage, previous, on_at=210.0, off_below=205.0):
-    """Hysteresis: ON at >= on_at, OFF below off_below, otherwise keep previous (may be None)."""
+# Below this the grid is gone; at or above it the grid is present (maybe out of range).
+GRID_LOST_BELOW = 100.0
+
+
+def grid_condition(voltage, off_below=205.0, high_off=265.0):
+    """None (no reading), "lost", "low" (present, below OFF_VOLTAGE), "high" (present,
+    above HIGH_OFF_VOLTAGE, the inverter's own limit) or "ok"."""
     if voltage is None:
         return None
-    if voltage >= on_at:
-        return ON
+    if voltage < GRID_LOST_BELOW:
+        return "lost"
     if voltage < off_below:
+        return "low"
+    if voltage > high_off:
+        return "high"
+    return "ok"
+
+
+def desired_state(
+    voltage, previous, on_at=210.0, off_below=205.0, high_on=255.0, high_off=265.0, disconnected=False
+):
+    """Hysteresis on both sides: OFF below off_below or above high_off, ON within
+    [on_at, high_on], otherwise keep previous (may be None). disconnected: the
+    inverter's grid relay is open, so the house runs on battery whatever the voltage."""
+    if voltage is None:
+        return None
+    if disconnected or voltage < off_below or voltage > high_off:
         return OFF
+    if on_at <= voltage <= high_on:
+        return ON
     return previous
+
+
+def parse_time(text):
+    """Epoch seconds saved in KV as text, or None when missing or garbage."""
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def cooldown_left(since, now, cooldown_seconds):
+    """Seconds the voltage must still stay in range before the boiler may switch back
+    on after a voltage switch-off (0: it may now). since: when the voltage came back
+    in range, or None when that wasn't recorded yet (the wait starts now)."""
+    if since is None:
+        return float(cooldown_seconds)
+    return min(max(cooldown_seconds - (now - since), 0.0), float(cooldown_seconds))
 
 
 def plug_state(data, channel=0):

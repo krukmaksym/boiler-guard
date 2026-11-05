@@ -86,6 +86,43 @@ class SwitchTest(unittest.TestCase):
         on = notify.on_switched(state, "off", "on", 212.0, switched=True, now=T0 + 40 * 60)
         self.assertIn("Низька напруга трималася 40 хв.", on)
 
+    def test_high_voltage_off_and_back(self):
+        state = {}
+        off = notify.on_switched(state, "on", "off", 268.4, switched=True, now=T0, cooldown_minutes=10)
+        self.assertIn("Висока напруга в мережі: 268.4 В (поріг 265 В)", off)
+        self.assertIn("опуститься до 255 В і протримається 10 хв", off)
+        on = notify.on_switched(state, "off", "on", 240.0, switched=True, now=T0 + 30 * 60)
+        self.assertIn("Висока напруга трималася 30 хв.", on)
+        self.assertEqual(state, {})
+
+    def test_inverter_disconnected_and_back(self):
+        state = {}
+        off = notify.on_switched(
+            state, "on", "off", 241.3, switched=True, now=T0, cooldown_minutes=10, disconnected=True
+        )
+        self.assertIn("Інвертор відключився від мережі (мережа 241.3 В)", off)
+        self.assertIn("знову підключиться до мережі і протримається 10 хв", off)
+        on = notify.on_switched(
+            state, "off", "on", 240.0, switched=True, now=T0 + 15 * 60, back_since=T0 + 5 * 60
+        )
+        self.assertIn("Інвертор знову підключився до мережі (240.0 В). Відключення тривало 5 хв.", on)
+        self.assertEqual(state, {})
+
+    def test_high_voltage_with_the_relay_still_closed(self):
+        on_grid = notify.on_switched({}, "on", "off", 268.0, switched=True, disconnected=False)
+        self.assertIn("Висока напруга", on_grid)
+        self.assertNotIn("Інвертор", on_grid)
+        unknown = notify.on_switched({}, "on", "off", 268.0, switched=True)
+        self.assertIn("Інвертор відключається від мережі", unknown)
+
+    def test_disconnected_during_an_outage_is_an_outage(self):
+        off = notify.on_switched({}, "on", "off", 0.0, switched=True, disconnected=True)
+        self.assertIn("Зникло світло", off)
+
+    def test_low_voltage_names_the_cooldown(self):
+        off = notify.on_switched({}, "on", "off", 190.0, switched=True, cooldown_minutes=10)
+        self.assertIn("підніметься до 210 В і протримається 10 хв", off)
+
     def test_no_length_when_switch_off_time_unknown(self):
         # e.g. the switch-off happened before this was deployed
         on = notify.on_switched({}, "off", "on", 226.0, switched=True, now=T0)

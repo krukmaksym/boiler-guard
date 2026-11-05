@@ -130,8 +130,55 @@ class HysteresisTest(unittest.TestCase):
             self.assertEqual(logic.desired_state(205.0, previous), previous)
             self.assertEqual(logic.desired_state(209.9, previous), previous)
 
+    def test_high_voltage_side(self):
+        self.assertEqual(logic.desired_state(265.1, logic.ON), logic.OFF)
+        self.assertEqual(logic.desired_state(265.0, logic.ON), logic.ON)  # band keeps previous
+        self.assertEqual(logic.desired_state(256.0, logic.OFF), logic.OFF)
+        self.assertEqual(logic.desired_state(255.0, logic.OFF), logic.ON)
+
+    def test_grid_condition(self):
+        self.assertIsNone(logic.grid_condition(None))
+        self.assertEqual(logic.grid_condition(0.0), "lost")
+        self.assertEqual(logic.grid_condition(190.0), "low")
+        self.assertEqual(logic.grid_condition(230.0), "ok")
+        self.assertEqual(logic.grid_condition(265.0), "ok")
+        self.assertEqual(logic.grid_condition(265.5), "high")
+
     def test_unknown_voltage(self):
         self.assertIsNone(logic.desired_state(None, logic.ON))
+
+
+class GridRelayTest(unittest.TestCase):
+    def test_relay_open(self):
+        self.assertIs(logic.relay_open("Pull-in"), False)
+        self.assertIs(logic.relay_open(" pull-in "), False)
+        self.assertIs(logic.relay_open("Break"), True)
+        self.assertIs(logic.relay_open("break"), True)
+        for unknown in (None, "", "--", "Pull-out"):
+            self.assertIsNone(logic.relay_open(unknown))
+
+    def test_open_relay_means_off(self):
+        self.assertEqual(logic.desired_state(230.0, logic.ON, disconnected=True), logic.OFF)
+        self.assertEqual(logic.desired_state(230.0, logic.OFF, disconnected=False), logic.ON)
+
+    def test_odd_relay_values_are_none(self):
+        data = deye()
+        data["deviceDataList"][0]["dataList"].append({"key": "GridRelayStatus", "value": 1})
+        self.assertIsNone(logic.grid_relay(data, SN, NOW))
+
+
+class CooldownTest(unittest.TestCase):
+    def test_cooldown_left(self):
+        self.assertEqual(logic.cooldown_left(None, NOW, 600), 600)
+        self.assertEqual(logic.cooldown_left(NOW - 120, NOW, 600), 480)
+        self.assertEqual(logic.cooldown_left(NOW - 900, NOW, 600), 0)
+        self.assertEqual(logic.cooldown_left(NOW + 999, NOW, 600), 600)  # clock skew: capped
+        self.assertEqual(logic.cooldown_left(None, NOW, 0), 0)
+
+    def test_parse_time(self):
+        self.assertEqual(logic.parse_time("1800000000.5"), 1800000000.5)
+        for bad in (None, "", "garbage", "nan", "inf"):
+            self.assertIsNone(logic.parse_time(bad))
 
 
 class PlugPowerTest(unittest.TestCase):
@@ -315,6 +362,8 @@ class DeviceReadingsTest(unittest.TestCase):
         with_load["deviceDataList"][0]["dataList"] += [
             {"key": "SOC", "value": "87", "unit": "%"},
             {"key": "UPSLoadPower", "value": "640", "unit": "W"},
+            {"key": "BatteryPower", "value": "-1200", "unit": "W"},
+            {"key": "GridRelayStatus", "value": "Pull-in", "unit": ""},
         ]
         responses = [
             with_load,
@@ -331,10 +380,14 @@ class DeviceReadingsTest(unittest.TestCase):
                 logic.grid_voltage(data, SN, NOW),
                 logic.battery_soc(data, SN, NOW),
                 logic.backup_load(data, SN, NOW),
+                logic.battery_power(data, SN, NOW),
+                logic.grid_relay(data, SN, NOW),
                 logic.reading_problem(data, SN, NOW),
             )
             self.assertEqual(logic.device_readings(data, SN, NOW), expected)
-        self.assertEqual(logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, None))
+        self.assertEqual(
+            logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, -1200.0, "Pull-in", None)
+        )
 
 
 if __name__ == "__main__":

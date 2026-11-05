@@ -8,6 +8,8 @@ in the chat; the boiler on/off buttons work only for Telegram user IDs listed in
 TELEGRAM_ADMIN_IDS.
 """
 
+import logic
+
 STATUS = "/status"
 BOILER = "/boiler"
 HELP_COMMANDS = frozenset({"/start", "/help"})
@@ -20,6 +22,7 @@ PANEL_TTL_LIVE_SECONDS = 60  # webhook: presses arrive within seconds
 POLL_DELAY_SECONDS = 60  # polling: how late a cron run may see a press
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
+BATTERY_IDLE_WATTS = 20  # battery power below this (either way) counts as neither charging nor discharging
 
 # Persistent keyboard under the input field (posted by scripts/telegram_menu.py).
 # A press posts the button's text as the user's own message. The bot needs group
@@ -71,6 +74,23 @@ AUTO_WAIT_MESSAGE = (
     "🔌 Автоматичний режим відновлено. Зараз світла немає (або немає свіжих даних від "
     "інвертора), тому бойлер не вмикається від батареї. Він увімкнеться сам, коли буде світло."
 )
+AUTO_WAIT_OFF_GRID_MESSAGE = (
+    "🔌 Автоматичний режим відновлено. Зараз інвертор відключений від мережі і живить дім "
+    "від батареї, тому бойлер не вмикається. Він увімкнеться сам, коли інвертор знову "
+    "підключиться до мережі."
+)
+
+
+def auto_wait_voltage_message(voltage):
+    """Grid is present, but its voltage keeps the boiler off (out of range, or not yet
+    back at ON_VOLTAGE after a low-voltage switch-off)."""
+    return (
+        f"🔌 Автоматичний режим відновлено. Світло є, але напруга в мережі ({voltage:.0f} В) "
+        "поза нормою для бойлера, тому він не вмикається. Він увімкнеться сам, коли напруга "
+        "нормалізується."
+    )
+
+
 PROD_HOLD_MESSAGE = (  # test Worker only
     "⛔ Бойлер вимкнено вручну в робочому боті, тому тестовий бот його не вмикає. "
     "Увімкніть його через робочий бот."
@@ -176,14 +196,18 @@ def replies(found):
     return latest
 
 
-def control_message(action, target, switched):
+def control_message(action, target, switched, voltage=None, off_grid=False):
     """Reply to a button press. Says whether the plug was actually switched or was
-    already in that state, so the admin isn't told "switched on" for a no-op."""
+    already in that state, so the admin isn't told "switched on" for a no-op. When "on"
+    is refused, says why: voltage (this run's reading) shows whether grid is present,
+    off_grid that the inverter has disconnected itself from it."""
     if action == "off":
         head = "⛔ Бойлер вимкнено вручну." if switched else "⛔ Бойлер вже вимкнено."
         return f"{head} {HOLD_NOTE}"
     if target != "on":
-        return AUTO_WAIT_MESSAGE
+        if logic.grid_condition(voltage) in (None, "lost"):
+            return AUTO_WAIT_MESSAGE
+        return AUTO_WAIT_OFF_GRID_MESSAGE if off_grid else auto_wait_voltage_message(voltage)
     if switched:
         return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
     return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."
@@ -201,14 +225,53 @@ def power_line(watts):
     return f"⚡️ Потужність: {watts:.0f} Вт (вода нагріта)"
 
 
-def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=None, load=None):
+def battery_line(soc, watts):
+    """'🔋 Батарея 80%, заряджається: 1200 Вт'; either part may be unknown (None)."""
+    parts = [f"🔋 Батарея {soc:.0f}%" if soc is not None else "🔋 Батарея"]
+    if watts is not None:
+        if watts <= -BATTERY_IDLE_WATTS:
+            parts.append(f"заряджається: {-watts:.0f} Вт")
+        elif watts >= BATTERY_IDLE_WATTS:
+            parts.append(f"розряджається: {watts:.0f} Вт")
+        else:
+            parts.append("не заряджається і не розряджається")
+    return ", ".join(parts) if soc is not None else " ".join(parts)
+
+
+def status_message(
+    voltage,
+    plug,
+    soc,
+    off_below=205.0,
+    manual_off=False,
+    power=None,
+    load=None,
+    high_off=265.0,
+    wait_seconds=None,
+    battery=None,
+    relay=None,
+):
+    """wait_seconds: how long the voltage must still stay in range before the boiler
+    switches back on after a voltage switch-off (None or 0: not waiting). battery:
+    battery power in W, Deye's sign (negative while charging). relay: the inverter's
+    grid relay status text from Deye ("Pull-in" while connected), or None."""
     lines = ["📊 Поточний стан"]
-    if voltage is None:
+    condition = logic.grid_condition(voltage, off_below, high_off)
+    if condition is None:
         lines.append("❔ Немає свіжих даних від інвертора Deye")
-    elif voltage >= off_below:
-        lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
-    else:
+    elif condition == "lost":
         lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
+    elif condition == "low":
+        lines.append(
+            f"📉 Світло є, але напруга занизька для бойлера: {voltage:.0f} В (поріг {off_below:.0f} В)"
+        )
+    elif condition == "high":
+        lines.append(f"📈 Світло є, але напруга зависока: {voltage:.0f} В (поріг {high_off:.0f} В)")
+    else:
+        lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
+    disconnected = logic.relay_open(relay)
+    if condition not in (None, "lost") and (disconnected or (disconnected is None and condition == "high")):
+        lines.append("⚠️ Інвертор відключився від мережі й живить дім від батареї")
     if plug == "on":
         lines.append("🔥 Бойлер увімкнений")
         if power is not None:
@@ -219,8 +282,12 @@ def status_message(voltage, plug, soc, off_below=205.0, manual_off=False, power=
         lines.append("❔ Стан бойлера невідомий (розетка Shelly не відповідає)")
     if manual_off:
         lines.append("✋ Ручний режим: бойлер вимкнено адміністратором")
-    if soc is not None:
-        lines.append(f"🔋 Батарея {soc:.0f}%")
+    elif wait_seconds and plug != "on" and condition == "ok" and not disconnected:
+        # Only while this reading is in range: right after a dip the saved wait lags behind.
+        minutes = max(round(wait_seconds / 60), 1)
+        lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
+    if soc is not None or battery is not None:
+        lines.append(battery_line(soc, battery))
     if load is not None:
         lines.append(f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт")
     if voltage is None:

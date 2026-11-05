@@ -49,6 +49,13 @@ DESIRED_KEY = "state:desired"
 # Saved instead of "on" when grid is back but the admin holds the plug off, so once the
 # hold ends (by any path) the next run with grid sees work to do and switches on.
 HELD_ON = "on:held"
+# Saved instead of "off" by every switch-off. Switching back on then waits until the
+# voltage has stayed in range for VOLTAGE_COOLDOWN_SECONDS, so a voltage hovering
+# around a threshold can't flip the boiler on and off every minute. This covers
+# outages too: a short outage and reconnect flaps the same way. (A plain "off" is
+# from before this existed.)
+COOLDOWN_OFF = "off:cooldown"
+ON_PENDING_KEY = "state:on_pending"  # when the voltage came back in range (COOLDOWN_OFF only)
 MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
 # Set for a few minutes after the admin presses ⛔: the cron then checks the plug really
 # stayed off (a switch-on racing the press, or reading a not-yet-visible mode from KV,
@@ -220,13 +227,31 @@ class Default(WorkerEntrypoint):
         return values
 
     def thresholds(self):
-        """(ON_VOLTAGE, OFF_VOLTAGE). ON below OFF would break the hysteresis (a voltage
-        between them would count as grid present), so that is a config error."""
-        on_at = float(self.var("ON_VOLTAGE", "210"))
-        off_below = float(self.var("OFF_VOLTAGE", "205"))
-        if not on_at >= off_below:  # also refuses NaN
+        """{on_at, off_below, high_on, high_off} for logic.desired_state. They must be in
+        order OFF <= ON <= HIGH_ON <= HIGH_OFF, or the hysteresis breaks (a voltage
+        between a swapped pair would count as in range), so anything else is a config error."""
+        values = {
+            "off_below": float(self.var("OFF_VOLTAGE", "205")),
+            "on_at": float(self.var("ON_VOLTAGE", "210")),
+            "high_on": float(self.var("HIGH_ON_VOLTAGE", "255")),
+            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
+        }
+        if not values["on_at"] >= values["off_below"]:  # also refuses NaN
             raise ConfigError("ON_VOLTAGE must not be below OFF_VOLTAGE")
-        return on_at, off_below
+        if not values["high_off"] >= values["high_on"] >= values["on_at"]:
+            raise ConfigError("need ON_VOLTAGE <= HIGH_ON_VOLTAGE <= HIGH_OFF_VOLTAGE")
+        return values
+
+    def cooldown_seconds(self):
+        """VOLTAGE_COOLDOWN_SECONDS: how long the voltage must stay in range before the
+        boiler switches back on after a voltage switch-off (0 turns the wait off)."""
+        try:
+            value = int(self.var("VOLTAGE_COOLDOWN_SECONDS", "600"))
+        except ValueError:
+            value = -1
+        if value < 0:
+            raise ConfigError("VOLTAGE_COOLDOWN_SECONDS must be a whole number of seconds, 0 or more")
+        return value
 
     # --- KV ---------------------------------------------------------------
 
@@ -249,9 +274,15 @@ class Default(WorkerEntrypoint):
         return await self.kv_get(MODE_KEY) == logic.OFF or await self.prod_held_off()
 
     async def saved_desired(self):
-        """(raw KV value, desired state it stands for): HELD_ON counts as "on"."""
+        """(raw KV value, desired state it stands for): HELD_ON counts as "on",
+        COOLDOWN_OFF as "off"."""
         saved = await self.kv_get(DESIRED_KEY)
-        return saved, logic.ON if saved == HELD_ON else saved
+        return saved, {HELD_ON: logic.ON, COOLDOWN_OFF: logic.OFF}.get(saved, saved)
+
+    async def clear_on_pending(self):
+        """The voltage left the range again (or the boiler is back on): the wait restarts."""
+        if await self.kv_get(ON_PENDING_KEY):
+            await self.env.STATE.delete(ON_PENDING_KEY)
 
     async def kv_put(self, key, value, ttl=None):
         if ttl:
@@ -306,20 +337,28 @@ class Default(WorkerEntrypoint):
         return data
 
     async def deye_reading(self, secrets):
-        """(grid voltage, battery %, backup load W, problem) from one Deye call. Voltage
-        is None when Deye is unavailable for any reason, and problem is then
-        (code, log detail)."""
+        """A logic.Reading from one Deye call. Its voltage is None when Deye is
+        unavailable for any reason, and its problem is then (code, log detail)."""
         try:
             data = await self.deye_latest(secrets)
         except Exception as exc:  # network errors, bad token response, ...
             log(f"Deye unavailable: {type(exc).__name__}: {exc}")
-            return None, None, None, ("unreachable", type(exc).__name__)
+            return logic.Reading(problem=("unreachable", type(exc).__name__))
         now = time.time()
         max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
         sn = secrets["INVERTER_SN"]
         key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
         load_key = self.var("BACKUP_LOAD_KEY", "UPSLoadPower")
-        return logic.device_readings(data, sn, now=now, key=key, load_key=load_key, max_age_seconds=max_age)
+        return logic.device_readings(
+            data,
+            sn,
+            now=now,
+            key=key,
+            load_key=load_key,
+            battery_key=self.var("BATTERY_POWER_KEY", "BatteryPower"),
+            relay_key=self.var("GRID_RELAY_KEY", "GridRelayStatus"),
+            max_age_seconds=max_age,
+        )
 
     # --- Shelly -----------------------------------------------------------
 
@@ -503,12 +542,15 @@ class Default(WorkerEntrypoint):
         if "voltage" in run:
             return
         secrets = self.secrets()
-        on_at, off_below = self.thresholds()
-        voltage, soc, load, _ = await self.deye_reading(secrets)
-        run.update(voltage=voltage, soc=soc, load=load)
-        if voltage is not None:
+        thresholds = self.thresholds()
+        reading = await self.deye_reading(secrets)
+        run.update(reading._asdict())
+        if reading.voltage is not None:
             previous = (await self.saved_desired())[1]
-            run["desired"] = logic.desired_state(voltage, previous, on_at=on_at, off_below=off_below)
+            disconnected = logic.relay_open(reading.relay) is True
+            run["desired"] = logic.desired_state(
+                reading.voltage, previous, **thresholds, disconnected=disconnected
+            )
 
     async def status_snapshot(self, run):
         """Everything a status reply shows. Shelly is polled fresh (state and live
@@ -521,11 +563,28 @@ class Default(WorkerEntrypoint):
             "voltage": run.get("voltage"),
             "plug": plug,
             "soc": run.get("soc"),
+            "battery": run.get("battery"),
+            "relay": run.get("relay"),
             "load": run.get("load"),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
+            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
             "manual_off": await self.held_off(),
             "power": power,
+            "wait_seconds": await self.cooldown_remaining(),
         }
+
+    async def cooldown_remaining(self):
+        """Seconds until a voltage switch-off may end (the voltage is back in range and
+        has to stay there), or None when the boiler isn't waiting for that."""
+        if (await self.saved_desired())[0] != COOLDOWN_OFF:
+            return None
+        since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
+        if since is None:
+            return None
+        try:
+            return logic.cooldown_left(since, time.time(), self.cooldown_seconds())
+        except ConfigError:
+            return None
 
     async def handle_taps(self, presses, admins, run, acknowledge=False):
         """Apply only the latest valid button press from an admin; tell non-admins and
@@ -602,7 +661,12 @@ class Default(WorkerEntrypoint):
                 await self.kv_put(DESIRED_KEY, HELD_ON)  # grid is on, but now held off
         else:
             await self.env.STATE.delete(MODE_KEY)
-        return bot.control_message(action, target, switched)
+            if target == logic.ON and (await self.saved_desired())[0] == COOLDOWN_OFF:
+                # The admin switched on during the voltage cooldown: that ends it.
+                await self.kv_put(DESIRED_KEY, logic.ON)
+                await self.clear_on_pending()
+        off_grid = logic.relay_open(run.get("relay")) is True
+        return bot.control_message(action, target, switched, voltage=run.get("voltage"), off_grid=off_grid)
 
     async def poll_plug(self):
         """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""
@@ -645,10 +709,14 @@ class Default(WorkerEntrypoint):
     async def check(self, state, outbox, run):
         secrets = self.secrets()
         channel = int(self.var("SHELLY_CHANNEL", "0"))
-        on_at, off_below = self.thresholds()
+        thresholds = self.thresholds()
+        cooldown = self.cooldown_seconds()
 
-        voltage, soc, load, problem = await self.deye_reading(secrets)
-        run.update(voltage=voltage, soc=soc, load=load)
+        reading = await self.deye_reading(secrets)
+        run.update(reading._asdict())
+        voltage, relay, problem = reading.voltage, reading.relay, reading.problem
+        relay_state = logic.relay_open(relay)  # True: off grid, False: on grid, None: unknown
+        disconnected = relay_state is True
         outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
         if voltage is None:
             log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
@@ -656,12 +724,26 @@ class Default(WorkerEntrypoint):
             return
 
         saved, previous = await self.saved_desired()
-        desired = logic.desired_state(voltage, previous, on_at=on_at, off_below=off_below)
+        desired = logic.desired_state(voltage, previous, **thresholds, disconnected=disconnected)
         run["desired"] = desired
+        back_since = None  # when the voltage came back in range after a switch-off
+        if desired == logic.ON and saved == COOLDOWN_OFF:
+            now = time.time()
+            back_since = logic.parse_time(await self.kv_get(ON_PENDING_KEY))
+            if logic.cooldown_left(back_since, now, cooldown) > 0:
+                if back_since is None:
+                    await self.kv_put(ON_PENDING_KEY, str(now))
+                log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
+                await self.enforce_hold(secrets, channel, run)
+                return
+        if desired == logic.OFF and saved == COOLDOWN_OFF:
+            await self.clear_on_pending()
+        elif desired == logic.OFF and saved == logic.OFF:
+            await self.kv_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
         # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.
         resume = saved == HELD_ON and desired == logic.ON and not await self.held_off()
         if desired is None or (desired == previous and not resume):
-            log(f"grid {voltage:.1f}V, desired={desired}; no change")
+            log(f"grid {voltage:.1f}V, relay={relay!r}, desired={desired}; no change")
             await self.enforce_hold(secrets, channel, run)
             return
 
@@ -688,11 +770,16 @@ class Default(WorkerEntrypoint):
         if actual != target:
             await self.shelly("/device/relay/control", secrets, channel=channel, turn=target)
             run["plug"] = target
-            log(f"grid {voltage:.1f}V: switched plug {actual} -> {target}")
+            log(f"grid {voltage:.1f}V, relay={relay!r}: switched plug {actual} -> {target}")
         else:
             log(f"grid {voltage:.1f}V: plug already {actual}" + (" (held off by admin)" if held else ""))
 
-        await self.kv_put(DESIRED_KEY, HELD_ON if held else desired)
+        if held:
+            await self.kv_put(DESIRED_KEY, HELD_ON)
+        else:
+            await self.kv_put(DESIRED_KEY, COOLDOWN_OFF if desired == logic.OFF else desired)
+        if saved == COOLDOWN_OFF and desired == logic.ON:
+            await self.clear_on_pending()
         if resume:
             notify.on_resumed(state)
             return  # no grid change to announce; the admin's ✅ reply already said so
@@ -704,9 +791,14 @@ class Default(WorkerEntrypoint):
                 voltage,
                 switched=actual != target,
                 held=held,
-                off_below=off_below,
-                on_at=on_at,
+                off_below=thresholds["off_below"],
+                on_at=thresholds["on_at"],
                 now=time.time(),
+                high_off=thresholds["high_off"],
+                high_on=thresholds["high_on"],
+                cooldown_minutes=round(cooldown / 60),
+                back_since=back_since,
+                disconnected=relay_state,
             )
         )
 

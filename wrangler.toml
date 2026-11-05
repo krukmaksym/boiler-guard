@@ -25,8 +25,18 @@ id = "ab7e5c69f89f42c7af5243d5de4f6c41"
 DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
+BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
+GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
+# The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
+# its grid relay, and reconnects only at HIGH_ON_VOLTAGE ("Grid V High (Reconnect)") or
+# below; the boiler follows. OFF_VOLTAGE/ON_VOLTAGE are stricter than its low limits.
+HIGH_ON_VOLTAGE = "255"
+HIGH_OFF_VOLTAGE = "265"
+# After any switch-off (outage or low/high voltage), the voltage must stay in range this long
+# before the boiler switches back on (0 = no wait).
+VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
 SHELLY_CHANNEL = "0"
 
@@ -63,8 +73,18 @@ NOTIFY_PREFIX = "🧪 ТЕСТ: "
 DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
+BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
+GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
+# The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
+# its grid relay, and reconnects only at HIGH_ON_VOLTAGE ("Grid V High (Reconnect)") or
+# below; the boiler follows. OFF_VOLTAGE/ON_VOLTAGE are stricter than its low limits.
+HIGH_ON_VOLTAGE = "255"
+HIGH_OFF_VOLTAGE = "265"
+# After any switch-off (outage or low/high voltage), the voltage must stay in range this long
+# before the boiler switches back on (0 = no wait).
+VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
 SHELLY_CHANNEL = "0"
 

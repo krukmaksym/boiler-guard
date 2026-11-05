@@ -148,6 +148,17 @@ class AdminButtonsTest(unittest.TestCase):
         self.assertIn("не увімкнеться сам", already_off)
         self.assertEqual(bot.control_message("on", None, switched=False), bot.AUTO_WAIT_MESSAGE)  # on battery
 
+    def test_refused_on_says_why(self):
+        def reply(voltage, off_grid=False):
+            return bot.control_message("on", None, False, voltage=voltage, off_grid=off_grid)
+
+        self.assertEqual(reply(240.0, off_grid=True), bot.AUTO_WAIT_OFF_GRID_MESSAGE)
+        self.assertIn("Світло є, але напруга в мережі (196 В) поза нормою", reply(196.0))
+        self.assertIn("(207 В)", reply(207.0))  # dead band after a low-voltage switch-off
+        for no_grid in (None, 0.0):
+            self.assertEqual(reply(no_grid), bot.AUTO_WAIT_MESSAGE)
+            self.assertEqual(reply(no_grid, off_grid=True), bot.AUTO_WAIT_MESSAGE)  # an outage
+
     def test_not_admin_message_shows_id(self):
         self.assertIn("222", bot.not_admin_message(222, configured=True))
         self.assertIn("не налаштоване", bot.not_admin_message(222, configured=False))
@@ -188,6 +199,48 @@ class StatusMessageTest(unittest.TestCase):
     def test_manual_off_line(self):
         self.assertIn("Ручний режим", bot.status_message(226.0, "off", 80.0, manual_off=True))
         self.assertNotIn("Ручний режим", bot.status_message(226.0, "on", 80.0))
+
+    def test_low_and_high_voltage_with_grid_present(self):
+        low = bot.status_message(190.0, "off", 80.0)
+        self.assertIn("Світло є, але напруга занизька для бойлера: 190 В (поріг 205 В)", low)
+        self.assertNotIn("Інвертор", low)  # its own low limit (180 V) is far below OFF_VOLTAGE
+        high = bot.status_message(268.0, "off", 80.0)
+        self.assertIn("Світло є, але напруга зависока: 268 В (поріг 265 В)", high)
+        self.assertIn("Інвертор відключився від мережі", high)  # relay unknown: by voltage
+
+    def test_grid_relay(self):
+        def text(voltage, relay):
+            return bot.status_message(voltage, "off", 80.0, relay=relay)
+
+        self.assertIn("Інвертор відключився від мережі", text(240.0, "Break"))
+        self.assertNotIn("Інвертор", text(240.0, "Pull-in"))
+        self.assertNotIn("Інвертор", text(240.0, "--"))  # unknown value: voltage decides
+        self.assertNotIn("Інвертор", text(268.0, "Pull-in"))  # the relay says it's still on grid
+        self.assertNotIn("Інвертор", text(0.0, "Break"))  # an outage, not a cut-off
+        self.assertNotIn("Інвертор", bot.status_message(230.0, "on", 80.0))
+
+    def test_battery_line(self):
+        def text(soc, watts):
+            return bot.status_message(230.0, "on", soc, battery=watts)
+
+        self.assertIn("🔋 Батарея 80%, заряджається: 1200 Вт", text(80.0, -1200.4))
+        self.assertIn("🔋 Батарея 64%, розряджається: 640 Вт", text(64.0, 640.0))
+        self.assertIn("🔋 Батарея 100%, не заряджається і не розряджається", text(100.0, -5.0))
+        self.assertIn("🔋 Батарея заряджається: 300 Вт", text(None, -300.0))
+        self.assertIn("🔋 Батарея 80%\n", text(80.0, None))  # power unknown
+        self.assertNotIn("Батарея", text(None, None))
+
+    def test_cooldown_line_only_while_in_range(self):
+        # Right after a dip the saved wait lags behind this reading.
+        self.assertNotIn("⏳", bot.status_message(196.0, "off", 80.0, wait_seconds=290))
+        self.assertNotIn("⏳", bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Break"))
+        self.assertIn("⏳", bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Pull-in"))
+
+    def test_cooldown_line(self):
+        text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)
+        self.assertIn("бойлер увімкнеться за ~5 хв", text)
+        self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, wait_seconds=0))
+        self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, manual_off=True, wait_seconds=290))
 
 
 if __name__ == "__main__":
