@@ -21,6 +21,16 @@ from telegram_chat_id import read_var  # noqa: E402
 import logic  # noqa: E402
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects, like the Worker: urllib would carry the bearer token along."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # urllib then raises HTTPError for the 3xx
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def post(base, path, payload, token=None, query=None):
     headers = {"Content-Type": "application/json"}
     if token:
@@ -29,7 +39,7 @@ def post(base, path, payload, token=None, query=None):
         logic.deye_url(base, path, query), data=json.dumps(payload).encode(), headers=headers, method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as resp:  # noqa: S310
+        with OPENER.open(request, timeout=15) as resp:
             return resp.status, json.load(resp)
     except Exception as exc:
         sys.exit(f"Deye request failed: {type(exc).__name__}")  # no text: may echo the request
@@ -57,9 +67,13 @@ def main(path=".prod.vars", wanted=""):
     device = next((d for d in data.get("deviceDataList") or [] if str(d.get("deviceSn")) == sn), None)
     if device is None:
         sys.exit(f"inverter not in Deye response (msg={data.get('msg')!r})")
-    collected = device.get("collectionTime") or 0
-    collected = collected / 1000 if collected > 1e12 else collected
-    print(f"deviceState={device.get('deviceState')!r}, uploaded {(time.time() - collected) / 60:.0f} min ago")
+    collected = device.get("collectionTime")
+    if isinstance(collected, (int, float)) and not isinstance(collected, bool):
+        collected = collected / 1000 if collected > 1e12 else collected
+        age = f"uploaded {(time.time() - collected) / 60:.0f} min ago"
+    else:
+        age = f"collectionTime={collected!r}"
+    print(f"deviceState={device.get('deviceState')!r}, {age}")
     for item in device.get("dataList") or []:
         key = str(item.get("key"))
         if wanted.lower() in key.lower():

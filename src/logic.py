@@ -2,6 +2,7 @@
 
 import math
 import re
+from typing import NamedTuple
 from urllib.parse import urlencode, urlparse
 
 ON = "on"
@@ -94,23 +95,23 @@ def grid_voltage(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     and stay ~230V on battery, so they must never be mistaken for grid.
     None covers: failed response, SN missing, inverter offline, stale or missing reading.
     """
-    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[0]
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds).voltage
 
 
 def battery_soc(data, sn, now, key="SOC", max_age_seconds=180):
     """Battery state of charge (%) from the same response, or None."""
-    return device_readings(data, sn, now, soc_key=key, max_age_seconds=max_age_seconds)[1]
+    return device_readings(data, sn, now, soc_key=key, max_age_seconds=max_age_seconds).soc
 
 
 def backup_load(data, sn, now, key="UPSLoadPower", max_age_seconds=180):
     """Power (W) the inverter is feeding to its backup (UPS) output, or None."""
-    return device_readings(data, sn, now, load_key=key, max_age_seconds=max_age_seconds)[2]
+    return device_readings(data, sn, now, load_key=key, max_age_seconds=max_age_seconds).load
 
 
 def battery_power(data, sn, now, key="BatteryPower", max_age_seconds=180):
     """Battery power (W) from the same response, or None. Deye's sign: negative while
     charging, positive while discharging."""
-    return device_readings(data, sn, now, battery_key=key, max_age_seconds=max_age_seconds)[3]
+    return device_readings(data, sn, now, battery_key=key, max_age_seconds=max_age_seconds).battery
 
 
 def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
@@ -120,12 +121,12 @@ def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     "offline" (Deye marks the inverter offline), "stale" (no fresh upload),
     "no_value" (the voltage key is missing or not a number).
     """
-    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[5]
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds).problem
 
 
 def grid_relay(data, sn, now, key="GridRelayStatus", max_age_seconds=180):
     """The inverter's grid relay status text (e.g. "Pull-in"), or None."""
-    return device_readings(data, sn, now, relay_key=key, max_age_seconds=max_age_seconds)[4]
+    return device_readings(data, sn, now, relay_key=key, max_age_seconds=max_age_seconds).relay
 
 
 # What Deye reports for the inverter's grid relay: "Pull-in" while connected to the
@@ -142,6 +143,18 @@ def relay_open(status):
     return RELAY_STATES.get(status.strip().lower())
 
 
+class Reading(NamedTuple):
+    """What one Deye /device/latest lookup gives. Only voltage drives the plug; the
+    rest is shown in /status. problem: (code, log detail) when voltage is None."""
+
+    voltage: float | None = None
+    soc: float | None = None  # battery %
+    load: float | None = None  # backup output W
+    battery: float | None = None  # battery W, negative while charging
+    relay: str | None = None  # grid relay text: "Pull-in" or "Break"
+    problem: tuple | None = None
+
+
 def device_readings(
     data,
     sn,
@@ -153,14 +166,19 @@ def device_readings(
     relay_key="GridRelayStatus",
     max_age_seconds=180,
 ):
-    """(grid voltage, battery %, backup load W, battery W, grid relay text, problem)
-    from one device lookup; the functions above each return one of these."""
+    """A Reading from one device lookup; the functions above each return one field."""
     device, problem = _fresh_device(data, sn, now, max_age_seconds)
     voltage = _reading(device, key)
     if problem is None and voltage is None:
         problem = ("no_value", f"no {key} value")
-    readings = (_reading(device, soc_key), _reading(device, load_key), _reading(device, battery_key))
-    return voltage, *readings, _text(device, relay_key), problem
+    return Reading(
+        voltage=voltage,
+        soc=_reading(device, soc_key),
+        load=_reading(device, load_key),
+        battery=_reading(device, battery_key),
+        relay=_text(device, relay_key),
+        problem=problem,
+    )
 
 
 def _fresh_device(data, sn, now, max_age_seconds):

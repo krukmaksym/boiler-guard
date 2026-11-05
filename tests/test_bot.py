@@ -148,6 +148,11 @@ class AdminButtonsTest(unittest.TestCase):
         self.assertIn("не увімкнеться сам", already_off)
         self.assertEqual(bot.control_message("on", None, switched=False), bot.AUTO_WAIT_MESSAGE)  # on battery
 
+    def test_auto_wait_off_grid(self):
+        off_grid = bot.control_message("on", None, False, off_grid=True)
+        self.assertEqual(off_grid, bot.AUTO_WAIT_OFF_GRID_MESSAGE)
+        self.assertEqual(bot.control_message("on", None, False), bot.AUTO_WAIT_MESSAGE)
+
     def test_not_admin_message_shows_id(self):
         self.assertIn("222", bot.not_admin_message(222, configured=True))
         self.assertIn("не налаштоване", bot.not_admin_message(222, configured=False))

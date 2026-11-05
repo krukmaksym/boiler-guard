@@ -337,14 +337,13 @@ class Default(WorkerEntrypoint):
         return data
 
     async def deye_reading(self, secrets):
-        """(grid voltage, battery %, backup load W, battery W, grid relay text, problem)
-        from one Deye call. Voltage is None when Deye is unavailable for any reason, and problem is then
-        (code, log detail)."""
+        """A logic.Reading from one Deye call. Its voltage is None when Deye is
+        unavailable for any reason, and its problem is then (code, log detail)."""
         try:
             data = await self.deye_latest(secrets)
         except Exception as exc:  # network errors, bad token response, ...
             log(f"Deye unavailable: {type(exc).__name__}: {exc}")
-            return None, None, None, None, None, ("unreachable", type(exc).__name__)
+            return logic.Reading(problem=("unreachable", type(exc).__name__))
         now = time.time()
         max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
         sn = secrets["INVERTER_SN"]
@@ -544,12 +543,14 @@ class Default(WorkerEntrypoint):
             return
         secrets = self.secrets()
         thresholds = self.thresholds()
-        voltage, soc, load, battery, relay, _ = await self.deye_reading(secrets)
-        run.update(voltage=voltage, soc=soc, load=load, battery=battery, relay=relay)
-        if voltage is not None:
+        reading = await self.deye_reading(secrets)
+        run.update(reading._asdict())
+        if reading.voltage is not None:
             previous = (await self.saved_desired())[1]
-            disconnected = logic.relay_open(relay) is True
-            run["desired"] = logic.desired_state(voltage, previous, **thresholds, disconnected=disconnected)
+            disconnected = logic.relay_open(reading.relay) is True
+            run["desired"] = logic.desired_state(
+                reading.voltage, previous, **thresholds, disconnected=disconnected
+            )
 
     async def status_snapshot(self, run):
         """Everything a status reply shows. Shelly is polled fresh (state and live
@@ -664,7 +665,9 @@ class Default(WorkerEntrypoint):
                 # The admin switched on during the voltage cooldown: that ends it.
                 await self.kv_put(DESIRED_KEY, logic.ON)
                 await self.clear_on_pending()
-        return bot.control_message(action, target, switched)
+        grid_present = logic.grid_condition(run.get("voltage")) not in (None, "lost")
+        off_grid = grid_present and logic.relay_open(run.get("relay")) is True
+        return bot.control_message(action, target, switched, off_grid=off_grid)
 
     async def poll_plug(self):
         """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""
@@ -710,9 +713,11 @@ class Default(WorkerEntrypoint):
         thresholds = self.thresholds()
         cooldown = self.cooldown_seconds()
 
-        voltage, soc, load, battery, relay, problem = await self.deye_reading(secrets)
-        run.update(voltage=voltage, soc=soc, load=load, battery=battery, relay=relay)
-        disconnected = logic.relay_open(relay) is True
+        reading = await self.deye_reading(secrets)
+        run.update(reading._asdict())
+        voltage, relay, problem = reading.voltage, reading.relay, reading.problem
+        relay_state = logic.relay_open(relay)  # True: off grid, False: on grid, None: unknown
+        disconnected = relay_state is True
         outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
         if voltage is None:
             log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
@@ -794,7 +799,7 @@ class Default(WorkerEntrypoint):
                 high_on=thresholds["high_on"],
                 cooldown_minutes=round(cooldown / 60),
                 back_since=back_since,
-                disconnected=disconnected,
+                disconnected=relay_state,
             )
         )
 

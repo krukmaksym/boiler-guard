@@ -74,6 +74,11 @@ AUTO_WAIT_MESSAGE = (
     "🔌 Автоматичний режим відновлено. Зараз світла немає (або немає свіжих даних від "
     "інвертора), тому бойлер не вмикається від батареї. Він увімкнеться сам, коли буде світло."
 )
+AUTO_WAIT_OFF_GRID_MESSAGE = (
+    "🔌 Автоматичний режим відновлено. Зараз інвертор відключений від мережі і живить дім "
+    "від батареї, тому бойлер не вмикається. Він увімкнеться сам, коли інвертор знову "
+    "підключиться до мережі."
+)
 PROD_HOLD_MESSAGE = (  # test Worker only
     "⛔ Бойлер вимкнено вручну в робочому боті, тому тестовий бот його не вмикає. "
     "Увімкніть його через робочий бот."
@@ -179,14 +184,15 @@ def replies(found):
     return latest
 
 
-def control_message(action, target, switched):
+def control_message(action, target, switched, off_grid=False):
     """Reply to a button press. Says whether the plug was actually switched or was
-    already in that state, so the admin isn't told "switched on" for a no-op."""
+    already in that state, so the admin isn't told "switched on" for a no-op.
+    off_grid: grid is present but the inverter has disconnected itself from it."""
     if action == "off":
         head = "⛔ Бойлер вимкнено вручну." if switched else "⛔ Бойлер вже вимкнено."
         return f"{head} {HOLD_NOTE}"
     if target != "on":
-        return AUTO_WAIT_MESSAGE
+        return AUTO_WAIT_OFF_GRID_MESSAGE if off_grid else AUTO_WAIT_MESSAGE
     if switched:
         return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
     return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."

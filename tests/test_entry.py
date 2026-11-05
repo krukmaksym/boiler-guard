@@ -84,7 +84,7 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
             return {"isok": True}
 
         worker.shelly = shelly
-        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None, None, None))
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(voltage, soc=80.0, load=0.0))
         return worker
 
 
@@ -124,7 +124,7 @@ class ManualOnTest(EntryTestCase):
 
     async def test_grid_lost_after_that_is_still_announced(self):
         worker = await self.held_with_grid_then_on_while_blind()
-        worker.deye_reading = mock.AsyncMock(return_value=(0.0, 80.0, 0.0, None, None, None))  # grid gone
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(0.0, soc=80.0, load=0.0))  # grid gone
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(worker.env.STATE.data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
@@ -203,7 +203,7 @@ class VoltageCooldownTest(EntryTestCase):
 
     def at(self, worker, voltage, minutes):
         self.now = 1_800_000_000.0 + minutes * 60
-        worker.deye_reading = mock.AsyncMock(return_value=(voltage, 80.0, 0.0, None, None, None))
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(voltage, soc=80.0, load=0.0))
 
     async def low_voltage_off(self):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=190.0)
@@ -282,7 +282,7 @@ class VoltageCooldownTest(EntryTestCase):
 
     async def test_an_open_grid_relay_switches_off_and_waits(self):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON)
-        worker.deye_reading = mock.AsyncMock(return_value=(240.0, 80.0, 0.0, None, "Break", None))
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(240.0, relay="Break"))
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [logic.OFF])
@@ -293,6 +293,13 @@ class VoltageCooldownTest(EntryTestCase):
         self.at(worker, 240.0, 11)
         await worker.check({}, [], {})
         self.assertEqual(self.switched, [logic.OFF, logic.ON])
+
+    async def test_admin_on_while_off_grid_says_so(self):
+        worker = self.worker({entry.DESIRED_KEY: entry.COOLDOWN_OFF, entry.MODE_KEY: logic.OFF})
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(240.0, relay="Break"))
+        reply = await worker.apply_control(logic.ON, {})
+        self.assertEqual(reply, bot.AUTO_WAIT_OFF_GRID_MESSAGE)
+        self.assertEqual(self.switched, [])
 
     async def test_no_cooldown_when_set_to_zero(self):
         worker = await self.low_voltage_off()

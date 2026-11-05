@@ -105,9 +105,12 @@ def low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes=0)
     )
 
 
-def high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes=0):
-    """Grid is present but above HIGH_OFF_VOLTAGE."""
-    head = f"📈 Висока напруга в мережі: {voltage:.1f} В (поріг {high_off:.0f} В). {INVERTER_ISLAND_NOTE}"
+def high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes=0, on_grid=False):
+    """Grid is present but above HIGH_OFF_VOLTAGE. on_grid: Deye says the inverter's
+    grid relay is still closed, so the note that it disconnects is left out."""
+    head = f"📈 Висока напруга в мережі: {voltage:.1f} В (поріг {high_off:.0f} В)."
+    if not on_grid:
+        head = f"{head} {INVERTER_ISLAND_NOTE}"
     if not switched:
         return f"{head} Бойлер уже був вимкнений."
     return (
@@ -260,7 +263,7 @@ def on_switched(
     high_on=255.0,
     cooldown_minutes=0,
     back_since=None,
-    disconnected=False,
+    disconnected=None,
 ):
     """Desired state changed and was applied. Silent on the very first run (no previous).
     held: grid is back but the admin switched the boiler off by hand, so it stays off.
@@ -270,7 +273,8 @@ def on_switched(
     it lasted. cooldown_minutes: how long the voltage must stay in range before the
     boiler switches back on, named in the switch-off message. back_since: when the
     voltage came back in range (the switch-on waited from then), if known.
-    disconnected: the inverter's grid relay was open at the switch-off."""
+    disconnected: the inverter's grid relay was open (True), closed (False) or not
+    reported (None) at the switch-off."""
     state.pop("switch_failed", None)
     if desired == "off":
         if now is not None:
@@ -289,7 +293,9 @@ def on_switched(
         if condition == "low":
             return low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes)
         if condition == "high":
-            return high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes)
+            return high_voltage_message(
+                voltage, switched, high_off, high_on, cooldown_minutes, on_grid=disconnected is False
+            )
         return grid_message(desired, voltage, switched, cooldown_minutes=cooldown_minutes)
     low = state.pop("low_voltage", False)
     high = state.pop("high_voltage", False)

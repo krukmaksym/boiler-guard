@@ -108,6 +108,13 @@ class SwitchTest(unittest.TestCase):
         self.assertIn("Інвертор знову підключився до мережі (240.0 В). Відключення тривало 5 хв.", on)
         self.assertEqual(state, {})
 
+    def test_high_voltage_with_the_relay_still_closed(self):
+        on_grid = notify.on_switched({}, "on", "off", 268.0, switched=True, disconnected=False)
+        self.assertIn("Висока напруга", on_grid)
+        self.assertNotIn("Інвертор", on_grid)
+        unknown = notify.on_switched({}, "on", "off", 268.0, switched=True)
+        self.assertIn("Інвертор відключається від мережі", unknown)
+
     def test_disconnected_during_an_outage_is_an_outage(self):
         off = notify.on_switched({}, "on", "off", 0.0, switched=True, disconnected=True)
         self.assertIn("Зникло світло", off)
