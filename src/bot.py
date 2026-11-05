@@ -239,11 +239,12 @@ def status_message(
     elif condition == "lost":
         lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
     elif condition == "low":
-        lines.append(f"📉 Світло є, але напруга занизька: {voltage:.0f} В (поріг {off_below:.0f} В)")
-        lines.append("🔋 Інвертор може відключитися від мережі й живити дім від батареї")
+        lines.append(
+            f"📉 Світло є, але напруга занизька для бойлера: {voltage:.0f} В (поріг {off_below:.0f} В)"
+        )
     elif condition == "high":
         lines.append(f"📈 Світло є, але напруга зависока: {voltage:.0f} В (поріг {high_off:.0f} В)")
-        lines.append("🔋 Інвертор може відключитися від мережі й живити дім від батареї")
+        lines.append("⚠️ Інвертор відключається від мережі й живить дім від батареї")
     else:
         lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
     if plug == "on":

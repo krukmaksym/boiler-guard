@@ -87,7 +87,7 @@ def grid_message(desired, voltage, switched, held=False, lasted=None, cooldown_m
     return f"✅ Світло повернулося (мережа {_v(voltage)}).{gap} {tail}"
 
 
-INVERTER_ISLAND_NOTE = "Інвертор може відключитися від мережі й живити дім від батареї."
+INVERTER_ISLAND_NOTE = "Інвертор відключається від мережі й живить дім від батареї."
 
 
 def _cooldown_tail(cooldown_minutes):
@@ -96,7 +96,7 @@ def _cooldown_tail(cooldown_minutes):
 
 def low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes=0):
     """Grid is present but below OFF_VOLTAGE. One decimal: 204.6 V must not read as 205 V."""
-    head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В). {INVERTER_ISLAND_NOTE}"
+    head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В)."
     if not switched:
         return f"{head} Бойлер уже був вимкнений."
     return (

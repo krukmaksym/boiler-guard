@@ -191,11 +191,12 @@ class StatusMessageTest(unittest.TestCase):
 
     def test_low_and_high_voltage_with_grid_present(self):
         low = bot.status_message(190.0, "off", 80.0)
-        self.assertIn("Світло є, але напруга занизька: 190 В (поріг 205 В)", low)
-        self.assertIn("Інвертор може відключитися від мережі", low)
+        self.assertIn("Світло є, але напруга занизька для бойлера: 190 В (поріг 205 В)", low)
+        self.assertNotIn("Інвертор", low)  # its own low limit (180 V) is far below OFF_VOLTAGE
         high = bot.status_message(268.0, "off", 80.0)
         self.assertIn("Світло є, але напруга зависока: 268 В (поріг 265 В)", high)
-        self.assertNotIn("відключитися", bot.status_message(230.0, "on", 80.0))
+        self.assertIn("Інвертор відключається від мережі", high)
+        self.assertNotIn("Інвертор", bot.status_message(230.0, "on", 80.0))
 
     def test_battery_line(self):
         def text(soc, watts):
