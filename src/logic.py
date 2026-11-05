@@ -120,7 +120,23 @@ def reading_problem(data, sn, now, key="GridVoltageL1L2", max_age_seconds=180):
     "offline" (Deye marks the inverter offline), "stale" (no fresh upload),
     "no_value" (the voltage key is missing or not a number).
     """
-    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[4]
+    return device_readings(data, sn, now, key=key, max_age_seconds=max_age_seconds)[5]
+
+
+def grid_relay(data, sn, now, key="GridRelayStatus", max_age_seconds=180):
+    """The inverter's grid relay status text (e.g. "Pull-in"), or None."""
+    return device_readings(data, sn, now, relay_key=key, max_age_seconds=max_age_seconds)[4]
+
+
+RELAY_CLOSED = "pull-in"  # what Deye reports while the inverter is connected to the grid
+
+
+def relay_open(status):
+    """True when the inverter has disconnected itself from the grid (its grid relay
+    reports anything but "Pull-in"); False while connected; None when not reported."""
+    if not isinstance(status, str) or not status.strip():
+        return None
+    return status.strip().lower() != RELAY_CLOSED
 
 
 def device_readings(
@@ -131,16 +147,17 @@ def device_readings(
     soc_key="SOC",
     load_key="UPSLoadPower",
     battery_key="BatteryPower",
+    relay_key="GridRelayStatus",
     max_age_seconds=180,
 ):
-    """(grid voltage, battery %, backup load W, battery W, problem) from one device
-    lookup; the functions above each return one of these."""
+    """(grid voltage, battery %, backup load W, battery W, grid relay text, problem)
+    from one device lookup; the functions above each return one of these."""
     device, problem = _fresh_device(data, sn, now, max_age_seconds)
     voltage = _reading(device, key)
     if problem is None and voltage is None:
         problem = ("no_value", f"no {key} value")
     readings = (_reading(device, soc_key), _reading(device, load_key), _reading(device, battery_key))
-    return voltage, *readings, problem
+    return voltage, *readings, _text(device, relay_key), problem
 
 
 def _fresh_device(data, sn, now, max_age_seconds):
@@ -182,6 +199,19 @@ def _reading(device, key):
     return None
 
 
+def _text(device, key):
+    """The key's value as a short string, else None."""
+    if device is None:
+        return None
+    for item in _dicts(device.get("dataList")):
+        if item.get("key") == key:
+            value = item.get("value")
+            if not isinstance(value, str):
+                return None
+            return value.strip()[:40] or None
+    return None
+
+
 def _dicts(value):
     """The dict items of a list from an upstream response; anything else is skipped,
     so an odd response reads as "no data" instead of crashing the run."""
@@ -215,8 +245,7 @@ GRID_LOST_BELOW = 100.0
 
 def grid_condition(voltage, off_below=205.0, high_off=265.0):
     """None (no reading), "lost", "low" (present, below OFF_VOLTAGE), "high" (present,
-    above HIGH_OFF_VOLTAGE) or "ok". "low" and "high" are when the inverter may have
-    opened its grid relay and runs the house from the battery."""
+    above HIGH_OFF_VOLTAGE, the inverter's own limit) or "ok"."""
     if voltage is None:
         return None
     if voltage < GRID_LOST_BELOW:
@@ -228,12 +257,15 @@ def grid_condition(voltage, off_below=205.0, high_off=265.0):
     return "ok"
 
 
-def desired_state(voltage, previous, on_at=210.0, off_below=205.0, high_on=255.0, high_off=265.0):
+def desired_state(
+    voltage, previous, on_at=210.0, off_below=205.0, high_on=255.0, high_off=265.0, disconnected=False
+):
     """Hysteresis on both sides: OFF below off_below or above high_off, ON within
-    [on_at, high_on], otherwise keep previous (may be None)."""
+    [on_at, high_on], otherwise keep previous (may be None). disconnected: the
+    inverter's grid relay is open, so the house runs on battery whatever the voltage."""
     if voltage is None:
         return None
-    if voltage < off_below or voltage > high_off:
+    if disconnected or voltage < off_below or voltage > high_off:
         return OFF
     if on_at <= voltage <= high_on:
         return ON

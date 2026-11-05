@@ -95,6 +95,23 @@ class SwitchTest(unittest.TestCase):
         self.assertIn("Висока напруга трималася 30 хв.", on)
         self.assertEqual(state, {})
 
+    def test_inverter_disconnected_and_back(self):
+        state = {}
+        off = notify.on_switched(
+            state, "on", "off", 241.3, switched=True, now=T0, cooldown_minutes=10, disconnected=True
+        )
+        self.assertIn("Інвертор відключився від мережі (мережа 241.3 В)", off)
+        self.assertIn("знову підключиться до мережі і протримається 10 хв", off)
+        on = notify.on_switched(
+            state, "off", "on", 240.0, switched=True, now=T0 + 15 * 60, back_since=T0 + 5 * 60
+        )
+        self.assertIn("Інвертор знову підключився до мережі (240.0 В). Відключення тривало 5 хв.", on)
+        self.assertEqual(state, {})
+
+    def test_disconnected_during_an_outage_is_an_outage(self):
+        off = notify.on_switched({}, "on", "off", 0.0, switched=True, disconnected=True)
+        self.assertIn("Зникло світло", off)
+
     def test_low_voltage_names_the_cooldown(self):
         off = notify.on_switched({}, "on", "off", 190.0, switched=True, cooldown_minutes=10)
         self.assertIn("підніметься до 210 В і протримається 10 хв", off)

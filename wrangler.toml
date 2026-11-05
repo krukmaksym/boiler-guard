@@ -26,6 +26,7 @@ DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
+GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" while on grid; anything else switches the boiler off
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
 # The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
@@ -73,6 +74,7 @@ DEYE_BASE_URL = "https://eu1-developer.deyecloud.com"
 GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
+GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" while on grid; anything else switches the boiler off
 ON_VOLTAGE = "210"
 OFF_VOLTAGE = "205"
 # The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens

@@ -3,6 +3,7 @@
   python3 -I scripts/mock_deye.py [port]          # default 8790
   curl "http://localhost:8790/set?v=0"            # grid lost
   curl "http://localhost:8790/set?v=230"          # grid back
+  curl "http://localhost:8790/set?relay=Pull-out" # inverter off grid (Pull-in: back)
 
 Run the Worker with: pywrangler dev --var DEYE_BASE_URL:http://localhost:8790
 Never logs request headers or bodies (they carry real credentials).
@@ -14,7 +15,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-state = {"voltage": "230.00"}
+state = {"voltage": "230.00", "relay": "Pull-in"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -32,9 +33,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/set":
-            state["voltage"] = f"{float(parse_qs(url.query)['v'][0]):.2f}"
-            print(f"mock: GridVoltageL1L2 = {state['voltage']}V", flush=True)
-            return self.reply({"voltage": state["voltage"]})
+            query = parse_qs(url.query)
+            if "v" in query:
+                state["voltage"] = f"{float(query['v'][0]):.2f}"
+            if "relay" in query:
+                state["relay"] = query["relay"][0][:20]
+            print(f"mock: {state['voltage']}V, relay {state['relay']}", flush=True)
+            return self.reply(state)
         self.reply({"success": False, "msg": "not found"}, 404)
 
     def do_POST(self):
@@ -57,6 +62,7 @@ class Handler(BaseHTTPRequestHandler):
                         {"key": "GridVoltageL1L2", "value": state["voltage"], "unit": "V"},
                         {"key": "LoadVoltageL1L2", "value": "230.00", "unit": "V"},
                         {"key": "UPSLoadPower", "value": "640", "unit": "W"},
+                        {"key": "GridRelayStatus", "value": state["relay"], "unit": ""},
                     ],
                 }
                 for sn in body.get("deviceList", [])

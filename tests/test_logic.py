@@ -148,6 +148,24 @@ class HysteresisTest(unittest.TestCase):
         self.assertIsNone(logic.desired_state(None, logic.ON))
 
 
+class GridRelayTest(unittest.TestCase):
+    def test_relay_open(self):
+        self.assertIs(logic.relay_open("Pull-in"), False)
+        self.assertIs(logic.relay_open(" pull-in "), False)
+        self.assertIs(logic.relay_open("Pull-out"), True)
+        self.assertIsNone(logic.relay_open(None))
+        self.assertIsNone(logic.relay_open(""))
+
+    def test_open_relay_means_off(self):
+        self.assertEqual(logic.desired_state(230.0, logic.ON, disconnected=True), logic.OFF)
+        self.assertEqual(logic.desired_state(230.0, logic.OFF, disconnected=False), logic.ON)
+
+    def test_odd_relay_values_are_none(self):
+        data = deye()
+        data["deviceDataList"][0]["dataList"].append({"key": "GridRelayStatus", "value": 1})
+        self.assertIsNone(logic.grid_relay(data, SN, NOW))
+
+
 class CooldownTest(unittest.TestCase):
     def test_cooldown_left(self):
         self.assertEqual(logic.cooldown_left(None, NOW, 600), 600)
@@ -344,6 +362,7 @@ class DeviceReadingsTest(unittest.TestCase):
             {"key": "SOC", "value": "87", "unit": "%"},
             {"key": "UPSLoadPower", "value": "640", "unit": "W"},
             {"key": "BatteryPower", "value": "-1200", "unit": "W"},
+            {"key": "GridRelayStatus", "value": "Pull-in", "unit": ""},
         ]
         responses = [
             with_load,
@@ -361,10 +380,13 @@ class DeviceReadingsTest(unittest.TestCase):
                 logic.battery_soc(data, SN, NOW),
                 logic.backup_load(data, SN, NOW),
                 logic.battery_power(data, SN, NOW),
+                logic.grid_relay(data, SN, NOW),
                 logic.reading_problem(data, SN, NOW),
             )
             self.assertEqual(logic.device_readings(data, SN, NOW), expected)
-        self.assertEqual(logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, -1200.0, None))
+        self.assertEqual(
+            logic.device_readings(with_load, SN, NOW), (223.2, 87.0, 640.0, -1200.0, "Pull-in", None)
+        )
 
 
 if __name__ == "__main__":

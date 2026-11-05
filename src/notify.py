@@ -116,6 +116,24 @@ def high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes=
     )
 
 
+def disconnected_message(voltage, switched, cooldown_minutes=0):
+    """Grid present, but the inverter has opened its grid relay."""
+    head = f"⚠️ Інвертор відключився від мережі (мережа {voltage:.1f} В) і живить дім від батареї."
+    if not switched:
+        return f"{head} Бойлер уже був вимкнений."
+    return (
+        f"{head} Бойлер вимкнено; він увімкнеться, коли інвертор знову підключиться до мережі"
+        f"{_cooldown_tail(cooldown_minutes)}."
+    )
+
+
+def reconnected_message(voltage, switched, held=False, lasted=None, waited=None):
+    gap = f" Відключення тривало {duration_text(lasted)}." if lasted is not None else ""
+    return (
+        f"✅ Інвертор знову підключився до мережі ({voltage:.1f} В).{gap} {_on_tail(switched, held, waited)}"
+    )
+
+
 def voltage_restored_message(voltage, switched, held=False, lasted=None, high=False, waited=None):
     tail = _on_tail(switched, held, waited)
     kind = "Висока" if high else "Низька"
@@ -242,6 +260,7 @@ def on_switched(
     high_on=255.0,
     cooldown_minutes=0,
     back_since=None,
+    disconnected=False,
 ):
     """Desired state changed and was applied. Silent on the very first run (no previous).
     held: grid is back but the admin switched the boiler off by hand, so it stays off.
@@ -250,18 +269,23 @@ def on_switched(
     came back. The switch-off time is remembered too, so the switch-on says how long
     it lasted. cooldown_minutes: how long the voltage must stay in range before the
     boiler switches back on, named in the switch-off message. back_since: when the
-    voltage came back in range (the switch-on waited from then), if known."""
+    voltage came back in range (the switch-on waited from then), if known.
+    disconnected: the inverter's grid relay was open at the switch-off."""
     state.pop("switch_failed", None)
     if desired == "off":
         if now is not None:
             state["off_since"] = now
         condition = logic.grid_condition(voltage, off_below, high_off)
-        state.pop("low_voltage", None)
-        state.pop("high_voltage", None)
-        if condition in ("low", "high"):
+        if disconnected and condition != "lost":
+            condition = "relay"
+        for flag in ("low_voltage", "high_voltage", "relay_voltage"):
+            state.pop(flag, None)
+        if condition in ("low", "high", "relay"):
             state[f"{condition}_voltage"] = True
         if previous is None:
             return None
+        if condition == "relay":
+            return disconnected_message(voltage, switched, cooldown_minutes)
         if condition == "low":
             return low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes)
         if condition == "high":
@@ -269,12 +293,15 @@ def on_switched(
         return grid_message(desired, voltage, switched, cooldown_minutes=cooldown_minutes)
     low = state.pop("low_voltage", False)
     high = state.pop("high_voltage", False)
+    relay = state.pop("relay_voltage", False)
     since = state.pop("off_since", None)
     if previous is None:
         return None
     back = back_since if back_since is not None else now
     lasted = back - since if back is not None and since is not None else None
     waited = now - back_since if now is not None and back_since is not None else None
+    if relay:
+        return reconnected_message(voltage, switched, held, lasted, waited)
     if low or high:
         return voltage_restored_message(voltage, switched, held, lasted, high=high, waited=waited)
     return grid_message(desired, voltage, switched, held, lasted, waited=waited)

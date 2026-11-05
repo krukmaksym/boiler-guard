@@ -228,10 +228,12 @@ def status_message(
     high_off=265.0,
     wait_seconds=None,
     battery=None,
+    relay=None,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler
     switches back on after a voltage switch-off (None or 0: not waiting). battery:
-    battery power in W, Deye's sign (negative while charging)."""
+    battery power in W, Deye's sign (negative while charging). relay: the inverter's
+    grid relay status text from Deye ("Pull-in" while connected), or None."""
     lines = ["📊 Поточний стан"]
     condition = logic.grid_condition(voltage, off_below, high_off)
     if condition is None:
@@ -244,9 +246,11 @@ def status_message(
         )
     elif condition == "high":
         lines.append(f"📈 Світло є, але напруга зависока: {voltage:.0f} В (поріг {high_off:.0f} В)")
-        lines.append("⚠️ Інвертор відключається від мережі й живить дім від батареї")
     else:
         lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
+    disconnected = logic.relay_open(relay)
+    if condition not in (None, "lost") and (disconnected or (disconnected is None and condition == "high")):
+        lines.append("⚠️ Інвертор відключився від мережі й живить дім від батареї")
     if plug == "on":
         lines.append("🔥 Бойлер увімкнений")
         if power is not None:

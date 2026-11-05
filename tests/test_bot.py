@@ -195,7 +195,16 @@ class StatusMessageTest(unittest.TestCase):
         self.assertNotIn("Інвертор", low)  # its own low limit (180 V) is far below OFF_VOLTAGE
         high = bot.status_message(268.0, "off", 80.0)
         self.assertIn("Світло є, але напруга зависока: 268 В (поріг 265 В)", high)
-        self.assertIn("Інвертор відключається від мережі", high)
+        self.assertIn("Інвертор відключився від мережі", high)  # relay unknown: by voltage
+
+    def test_grid_relay(self):
+        def text(voltage, relay):
+            return bot.status_message(voltage, "off", 80.0, relay=relay)
+
+        self.assertIn("Інвертор відключився від мережі", text(240.0, "Pull-out"))
+        self.assertNotIn("Інвертор", text(240.0, "Pull-in"))
+        self.assertNotIn("Інвертор", text(268.0, "Pull-in"))  # the relay says it's still on grid
+        self.assertNotIn("Інвертор", text(0.0, "Pull-out"))  # an outage, not a cut-off
         self.assertNotIn("Інвертор", bot.status_message(230.0, "on", 80.0))
 
     def test_battery_line(self):

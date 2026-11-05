@@ -25,6 +25,9 @@ Every minute:
      inverter's "Grid V High (Normal)" and `HIGH_ON_VOLTAGE` to "Grid V High
      (Reconnect)"; keep `OFF_VOLTAGE`/`ON_VOLTAGE` at or above its low limits.
    - in between → keep the previous desired state
+   - `GridRelayStatus` (`GRID_RELAY_KEY`) other than `Pull-in` → off, whatever the
+     voltage: the inverter has disconnected itself from the grid. Without that key the
+     voltage limits above stand in for it.
    - after any switch-off, the boiler switches back on only once the voltage has
      stayed in the "on" range for `VOLTAGE_COOLDOWN_SECONDS` (600 s); any dip restarts
      the wait. This covers outages too, since a short outage and reconnect flaps the
@@ -160,7 +163,7 @@ grid voltage, the boiler's real on/off state, its live power draw, battery charg
 the load on the inverter's backup output (`BACKUP_LOAD_KEY`, default `UPSLoadPower`),
 whether the battery is charging or discharging and at what power (`BATTERY_POWER_KEY`,
 default `BatteryPower`, negative while charging) and whether protection is active. When grid is present but its voltage is out of
-range, it says so (the inverter may be running the house from the battery), and
+range, or the inverter has disconnected itself from the grid, it says so, and
 during the voltage cooldown it says roughly when the boiler will switch back on. `/start` or `/help` explain what it does.
 
 The power line tells whether the boiler is actually heating: from 20 W up it reads
