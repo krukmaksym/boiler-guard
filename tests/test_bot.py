@@ -148,10 +148,16 @@ class AdminButtonsTest(unittest.TestCase):
         self.assertIn("не увімкнеться сам", already_off)
         self.assertEqual(bot.control_message("on", None, switched=False), bot.AUTO_WAIT_MESSAGE)  # on battery
 
-    def test_auto_wait_off_grid(self):
-        off_grid = bot.control_message("on", None, False, off_grid=True)
-        self.assertEqual(off_grid, bot.AUTO_WAIT_OFF_GRID_MESSAGE)
-        self.assertEqual(bot.control_message("on", None, False), bot.AUTO_WAIT_MESSAGE)
+    def test_refused_on_says_why(self):
+        def reply(voltage, off_grid=False):
+            return bot.control_message("on", None, False, voltage=voltage, off_grid=off_grid)
+
+        self.assertEqual(reply(240.0, off_grid=True), bot.AUTO_WAIT_OFF_GRID_MESSAGE)
+        self.assertIn("Світло є, але напруга в мережі (196 В) поза нормою", reply(196.0))
+        self.assertIn("(207 В)", reply(207.0))  # dead band after a low-voltage switch-off
+        for no_grid in (None, 0.0):
+            self.assertEqual(reply(no_grid), bot.AUTO_WAIT_MESSAGE)
+            self.assertEqual(reply(no_grid, off_grid=True), bot.AUTO_WAIT_MESSAGE)  # an outage
 
     def test_not_admin_message_shows_id(self):
         self.assertIn("222", bot.not_admin_message(222, configured=True))
@@ -223,6 +229,12 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("🔋 Батарея заряджається: 300 Вт", text(None, -300.0))
         self.assertIn("🔋 Батарея 80%\n", text(80.0, None))  # power unknown
         self.assertNotIn("Батарея", text(None, None))
+
+    def test_cooldown_line_only_while_in_range(self):
+        # Right after a dip the saved wait lags behind this reading.
+        self.assertNotIn("⏳", bot.status_message(196.0, "off", 80.0, wait_seconds=290))
+        self.assertNotIn("⏳", bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Break"))
+        self.assertIn("⏳", bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Pull-in"))
 
     def test_cooldown_line(self):
         text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)

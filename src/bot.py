@@ -79,6 +79,18 @@ AUTO_WAIT_OFF_GRID_MESSAGE = (
     "від батареї, тому бойлер не вмикається. Він увімкнеться сам, коли інвертор знову "
     "підключиться до мережі."
 )
+
+
+def auto_wait_voltage_message(voltage):
+    """Grid is present, but its voltage keeps the boiler off (out of range, or not yet
+    back at ON_VOLTAGE after a low-voltage switch-off)."""
+    return (
+        f"🔌 Автоматичний режим відновлено. Світло є, але напруга в мережі ({voltage:.0f} В) "
+        "поза нормою для бойлера, тому він не вмикається. Він увімкнеться сам, коли напруга "
+        "нормалізується."
+    )
+
+
 PROD_HOLD_MESSAGE = (  # test Worker only
     "⛔ Бойлер вимкнено вручну в робочому боті, тому тестовий бот його не вмикає. "
     "Увімкніть його через робочий бот."
@@ -184,15 +196,18 @@ def replies(found):
     return latest
 
 
-def control_message(action, target, switched, off_grid=False):
+def control_message(action, target, switched, voltage=None, off_grid=False):
     """Reply to a button press. Says whether the plug was actually switched or was
-    already in that state, so the admin isn't told "switched on" for a no-op.
-    off_grid: grid is present but the inverter has disconnected itself from it."""
+    already in that state, so the admin isn't told "switched on" for a no-op. When "on"
+    is refused, says why: voltage (this run's reading) shows whether grid is present,
+    off_grid that the inverter has disconnected itself from it."""
     if action == "off":
         head = "⛔ Бойлер вимкнено вручну." if switched else "⛔ Бойлер вже вимкнено."
         return f"{head} {HOLD_NOTE}"
     if target != "on":
-        return AUTO_WAIT_OFF_GRID_MESSAGE if off_grid else AUTO_WAIT_MESSAGE
+        if logic.grid_condition(voltage) in (None, "lost"):
+            return AUTO_WAIT_MESSAGE
+        return AUTO_WAIT_OFF_GRID_MESSAGE if off_grid else auto_wait_voltage_message(voltage)
     if switched:
         return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
     return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."
@@ -267,7 +282,8 @@ def status_message(
         lines.append("❔ Стан бойлера невідомий (розетка Shelly не відповідає)")
     if manual_off:
         lines.append("✋ Ручний режим: бойлер вимкнено адміністратором")
-    elif wait_seconds and plug != "on":
+    elif wait_seconds and plug != "on" and condition == "ok" and not disconnected:
+        # Only while this reading is in range: right after a dip the saved wait lags behind.
         minutes = max(round(wait_seconds / 60), 1)
         lines.append(f"⏳ Напруга в нормі: бойлер увімкнеться за ~{minutes} хв, якщо вона протримається")
     if soc is not None or battery is not None:

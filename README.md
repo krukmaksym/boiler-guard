@@ -131,6 +131,8 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 - grid voltage drops below `OFF_VOLTAGE` (e.g. 204.2 V) or rises above
   `HIGH_OFF_VOLTAGE` and the boiler is switched off, and when it switches back on after
   the cooldown, with how long it lasted (below 100 V counts as an outage, not low voltage);
+- the inverter disconnects itself from the grid (`GridRelayStatus` = `Break`) while grid
+  is present, and when it has reconnected and the boiler is back on after the cooldown;
 - Deye has given no trustworthy data for 5 minutes (protection paused), with the likely
   cause (Deye unreachable, inverter offline, stale upload, ...), and on recovery with how
   long the gap lasted. Every such run also logs the exact cause, e.g.

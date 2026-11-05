@@ -665,9 +665,8 @@ class Default(WorkerEntrypoint):
                 # The admin switched on during the voltage cooldown: that ends it.
                 await self.kv_put(DESIRED_KEY, logic.ON)
                 await self.clear_on_pending()
-        grid_present = logic.grid_condition(run.get("voltage")) not in (None, "lost")
-        off_grid = grid_present and logic.relay_open(run.get("relay")) is True
-        return bot.control_message(action, target, switched, off_grid=off_grid)
+        off_grid = logic.relay_open(run.get("relay")) is True
+        return bot.control_message(action, target, switched, voltage=run.get("voltage"), off_grid=off_grid)
 
     async def poll_plug(self):
         """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""
