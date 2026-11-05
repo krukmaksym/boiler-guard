@@ -351,6 +351,66 @@ class VoltageCooldownTest(EntryTestCase):
         )
         self.assertEqual(self.switched, [logic.OFF])  # still waiting for the cooldown
 
+    async def test_grid_back_at_low_voltage_after_an_outage(self):
+        """What happened on 2026-11-05: an outage at 19:02, the grid back at low voltage
+        for hours, 210 V only at 23:50. The outage must not be counted as 4 h 48 min."""
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})  # 19:02 outage
+        self.at(worker, 196.0, 130)  # back at 196 V after 2 h 10 min
+        await worker.check(state, outbox, {})
+        self.assertEqual(
+            outbox[-1],
+            "💡 Світло повернулося (мережа 196 В), але напруга низька для бойлера. "
+            "Світла не було 2 год 10 хв. Бойлер увімкнеться, коли напруга підніметься до 210 В "
+            "і протримається 10 хв.",
+        )
+        sent = len([m for m in outbox if m])
+        for minute, volts in ((140, 201.0), (200, 207.0)):  # still low or in the dead band
+            self.at(worker, volts, minute)
+            await worker.check(state, outbox, {})
+        self.assertEqual(len([m for m in outbox if m]), sent)  # said once
+        self.at(worker, 212.0, 288)  # 210 V+ at last
+        await worker.check(state, outbox, {})
+        self.assertIn(
+            "✅ Напруга в мережі відновилася (212.0 В). Низька напруга трималася 2 год 38 хв.", outbox[-1]
+        )
+        self.at(worker, 216.0, 299)
+        await worker.check(state, outbox, {})
+        self.assertEqual(outbox[-1], "🔥 Бойлер знову увімкнено: напруга стабільна вже 11 хв.")
+
+    async def test_grid_lost_again_after_back_at_low_voltage_is_announced(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.at(worker, 196.0, 10)
+        await worker.check(state, outbox, {})
+        self.at(worker, 0.0, 20)
+        await worker.check(state, outbox, {})
+        self.assertIn("Світло знову зникло", outbox[-1])
+        self.at(worker, 225.0, 30)
+        await worker.check(state, outbox, {})
+        self.assertIn("✅ Світло повернулося (мережа 225 В). Світла не було 10 хв.", outbox[-1])
+
+    async def test_a_dip_below_on_after_back_stays_silent(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        state, outbox = {}, []
+        await worker.check(state, outbox, {})
+        self.at(worker, 230.0, 5)
+        await worker.check(state, outbox, {})  # "back"
+        sent = len([m for m in outbox if m])
+        self.at(worker, 207.0, 7)  # dead band: the wait restarts
+        await worker.check(state, outbox, {})
+        self.assertEqual(len([m for m in outbox if m]), sent)
+
+    async def test_the_status_says_when_the_wait_is_over(self):
+        worker = await self.low_voltage_off()
+        self.at(worker, 230.0, 1)
+        await worker.check({}, [], {})
+        self.at(worker, 230.0, 11.5)  # the wait is over, the next run switches on
+        snapshot = await worker.status_snapshot({"voltage": 230.0})
+        self.assertEqual(snapshot["wait_seconds"], 0)
+
     async def test_a_voltage_dip_during_the_wait_is_silent(self):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=190.0)
         state, outbox = {}, []

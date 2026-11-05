@@ -282,7 +282,7 @@ def on_switched(
         condition = logic.grid_condition(voltage, off_below, high_off)
         if disconnected and condition != "lost":
             condition = "relay"
-        for flag in ("low_voltage", "high_voltage", "relay_voltage"):
+        for flag in ("low_voltage", "high_voltage", "relay_voltage", "back_notified", "present_notified"):
             state.pop(flag, None)
         if condition in ("low", "high", "relay"):
             state[f"{condition}_voltage"] = True
@@ -302,6 +302,7 @@ def on_switched(
     relay = state.pop("relay_voltage", False)
     since = state.pop("off_since", None)
     announced = state.pop("back_notified", False)
+    state.pop("present_notified", None)
     if previous is None:
         return None
     if announced:  # on_back already said the grid is back and for how long
@@ -360,12 +361,41 @@ def on_back(state, voltage, now, cooldown_minutes, held=False):
     return back_message(voltage, lasted, cooldown_minutes, cause, held)
 
 
+def on_back_but_low(state, voltage, now, on_at=210.0, high_on=255.0, cooldown_minutes=0):
+    """After an outage the grid is back, but its voltage keeps the boiler off (below
+    on_at, or above high_on). Say so at once instead of staying silent until the
+    voltage reaches the window, and count the outage only up to now: from here the
+    wait is a voltage problem, and on_back later says how long that lasted. Once per
+    episode; nothing when the switch-off was for voltage or the relay already."""
+    if state.get("back_notified"):  # a dip after "back" only restarts the wait, silently
+        return None
+    if any(state.get(flag) for flag in ("low_voltage", "high_voltage", "relay_voltage")):
+        return None
+    high = voltage > high_on
+    since = state.get("off_since")
+    lasted = now - since if since is not None else None
+    state["off_since"] = now
+    state["high_voltage" if high else "low_voltage"] = True
+    state["present_notified"] = True
+    wait = _cooldown_tail(cooldown_minutes)
+    if high:
+        head = f"💡 Світло повернулося (мережа {_v(voltage)}), але напруга зависока для бойлера."
+        until = f"коли напруга опуститься до {high_on:.0f} В{wait}"
+    else:
+        head = f"💡 Світло повернулося (мережа {_v(voltage)}), але напруга низька для бойлера."
+        until = f"коли напруга підніметься до {on_at:.0f} В{wait}"
+    gap = f" Світла не було {duration_text(lasted)}." if lasted is not None else ""
+    return f"{head}{gap} Бойлер увімкнеться, {until}."
+
+
 def on_lost_again(state, voltage, now, cause=None, cooldown_minutes=0):
     """The grid is gone again during the cooldown (cause None), or the inverter has cut
     itself off it again (cause "relay"), after the family was told it was back: say so
     once and re-arm on_back, so the next return is announced with how long this lasted.
     A dip in voltage only restarts the wait, silently."""
-    if not state.pop("back_notified", False):
+    told_back = state.pop("back_notified", False)
+    told_present = state.pop("present_notified", False)
+    if not (told_back or told_present):
         return None
     state["off_since"] = now
     for flag in ("low_voltage", "high_voltage", "relay_voltage"):

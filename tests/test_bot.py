@@ -277,7 +277,10 @@ class StatusMessageTest(unittest.TestCase):
     def test_cooldown_line(self):
         text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)
         self.assertIn("бойлер увімкнеться за ~5 хв", text)
-        self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, wait_seconds=0))
+        done = bot.status_message(230.0, "off", 80.0, wait_seconds=0)  # over, switch-on next run
+        self.assertIn("⏳ Напруга стабільна: бойлер увімкнеться протягом хвилини", done)
+        self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, wait_seconds=None))
+        self.assertNotIn("⏳", bot.status_message(230.0, "on", 80.0, wait_seconds=0))
         self.assertNotIn("⏳", bot.status_message(230.0, "off", 80.0, manual_off=True, wait_seconds=290))
 
 
