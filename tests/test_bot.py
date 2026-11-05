@@ -234,6 +234,11 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("🔋 Батарея 80%\n", text(80.0, None))  # power unknown
         self.assertNotIn("Батарея", text(None, None))
 
+    def test_load_line_with_battery_current(self):
+        text = bot.status_message(230.0, "on", 80.0, load=1930.0, load_amps=38.3)
+        self.assertIn("🏠 Навантаження на резервний вихід інвертора: 1930 Вт (≈38 А)\n", text)
+        self.assertIn("1930 Вт\n", bot.status_message(230.0, "on", 80.0, load=1930.0))  # current unknown
+
     def test_cooldown_line_only_while_in_range(self):
         # Right after a dip the saved wait lags behind this reading.
         self.assertNotIn("⏳", bot.status_message(196.0, "off", 80.0, wait_seconds=290))

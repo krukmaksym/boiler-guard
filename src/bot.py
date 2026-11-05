@@ -254,11 +254,13 @@ def status_message(
     wait_seconds=None,
     battery=None,
     relay=None,
+    load_amps=None,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler
     switches back on after a voltage switch-off (None or 0: not waiting). battery:
     battery power in W, Deye's sign (negative while charging). relay: the inverter's
-    grid relay status text from Deye ("Pull-in" while connected), or None."""
+    grid relay status text from Deye ("Pull-in" while connected), or None. load_amps:
+    battery current the backup load would need on battery alone, shown with the load."""
     lines = ["📊 Поточний стан"]
     condition = logic.grid_condition(voltage, off_below, high_off)
     if condition is None:
@@ -293,7 +295,10 @@ def status_message(
     if soc is not None or battery is not None:
         lines.append(battery_line(soc, battery))
     if load is not None:
-        lines.append(f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт")
+        line = f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт"
+        if load_amps is not None:
+            line += f" (≈{load_amps:.0f} А)"
+        lines.append(line)
     if voltage is None:
         lines.append("⚠️ Автоматичний захист тимчасово не працює")
     else:

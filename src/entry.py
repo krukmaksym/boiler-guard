@@ -357,6 +357,7 @@ class Default(WorkerEntrypoint):
             load_key=load_key,
             battery_key=self.var("BATTERY_POWER_KEY", "BatteryPower"),
             relay_key=self.var("GRID_RELAY_KEY", "GridRelayStatus"),
+            battery_voltage_key=self.var("BATTERY_VOLTAGE_KEY", "BatteryVoltage"),
             max_age_seconds=max_age,
         )
 
@@ -566,6 +567,7 @@ class Default(WorkerEntrypoint):
             "battery": run.get("battery"),
             "relay": run.get("relay"),
             "load": run.get("load"),
+            "load_amps": logic.battery_amps(run.get("load"), run.get("battery_voltage")),
             "off_below": float(self.var("OFF_VOLTAGE", "205")),
             "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
             "manual_off": await self.held_off(),
