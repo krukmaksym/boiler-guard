@@ -201,10 +201,11 @@ class StatusMessageTest(unittest.TestCase):
         def text(voltage, relay):
             return bot.status_message(voltage, "off", 80.0, relay=relay)
 
-        self.assertIn("Інвертор відключився від мережі", text(240.0, "Pull-out"))
+        self.assertIn("Інвертор відключився від мережі", text(240.0, "Break"))
         self.assertNotIn("Інвертор", text(240.0, "Pull-in"))
+        self.assertNotIn("Інвертор", text(240.0, "--"))  # unknown value: voltage decides
         self.assertNotIn("Інвертор", text(268.0, "Pull-in"))  # the relay says it's still on grid
-        self.assertNotIn("Інвертор", text(0.0, "Pull-out"))  # an outage, not a cut-off
+        self.assertNotIn("Інвертор", text(0.0, "Break"))  # an outage, not a cut-off
         self.assertNotIn("Інвертор", bot.status_message(230.0, "on", 80.0))
 
     def test_battery_line(self):

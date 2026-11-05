@@ -3,7 +3,7 @@
   python3 -I scripts/mock_deye.py [port]          # default 8790
   curl "http://localhost:8790/set?v=0"            # grid lost
   curl "http://localhost:8790/set?v=230"          # grid back
-  curl "http://localhost:8790/set?relay=Pull-out" # inverter off grid (Pull-in: back)
+  curl "http://localhost:8790/set?relay=Break"    # inverter off grid (Pull-in: back)
 
 Run the Worker with: pywrangler dev --var DEYE_BASE_URL:http://localhost:8790
 Never logs request headers or bodies (they carry real credentials).

@@ -152,9 +152,10 @@ class GridRelayTest(unittest.TestCase):
     def test_relay_open(self):
         self.assertIs(logic.relay_open("Pull-in"), False)
         self.assertIs(logic.relay_open(" pull-in "), False)
-        self.assertIs(logic.relay_open("Pull-out"), True)
-        self.assertIsNone(logic.relay_open(None))
-        self.assertIsNone(logic.relay_open(""))
+        self.assertIs(logic.relay_open("Break"), True)
+        self.assertIs(logic.relay_open("break"), True)
+        for unknown in (None, "", "--", "Pull-out"):
+            self.assertIsNone(logic.relay_open(unknown))
 
     def test_open_relay_means_off(self):
         self.assertEqual(logic.desired_state(230.0, logic.ON, disconnected=True), logic.OFF)

@@ -25,9 +25,9 @@ Every minute:
      inverter's "Grid V High (Normal)" and `HIGH_ON_VOLTAGE` to "Grid V High
      (Reconnect)"; keep `OFF_VOLTAGE`/`ON_VOLTAGE` at or above its low limits.
    - in between → keep the previous desired state
-   - `GridRelayStatus` (`GRID_RELAY_KEY`) other than `Pull-in` → off, whatever the
-     voltage: the inverter has disconnected itself from the grid. Without that key the
-     voltage limits above stand in for it.
+   - `GridRelayStatus` (`GRID_RELAY_KEY`) `Break` → off, whatever the voltage: the
+     inverter has disconnected itself from the grid (`Pull-in` while connected). Without
+     that key, or with any other value, the voltage limits above stand in for it.
    - after any switch-off, the boiler switches back on only once the voltage has
      stayed in the "on" range for `VOLTAGE_COOLDOWN_SECONDS` (600 s); any dip restarts
      the wait. This covers outages too, since a short outage and reconnect flaps the

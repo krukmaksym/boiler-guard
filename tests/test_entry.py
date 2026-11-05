@@ -282,7 +282,7 @@ class VoltageCooldownTest(EntryTestCase):
 
     async def test_an_open_grid_relay_switches_off_and_waits(self):
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON)
-        worker.deye_reading = mock.AsyncMock(return_value=(240.0, 80.0, 0.0, None, "Pull-out", None))
+        worker.deye_reading = mock.AsyncMock(return_value=(240.0, 80.0, 0.0, None, "Break", None))
         outbox = []
         await worker.check({}, outbox, {})
         self.assertEqual(self.switched, [logic.OFF])

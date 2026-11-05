@@ -128,15 +128,18 @@ def grid_relay(data, sn, now, key="GridRelayStatus", max_age_seconds=180):
     return device_readings(data, sn, now, relay_key=key, max_age_seconds=max_age_seconds)[4]
 
 
-RELAY_CLOSED = "pull-in"  # what Deye reports while the inverter is connected to the grid
+# What Deye reports for the inverter's grid relay: "Pull-in" while connected to the
+# grid, "Break" once it has disconnected itself.
+RELAY_STATES = {"pull-in": False, "break": True}
 
 
 def relay_open(status):
-    """True when the inverter has disconnected itself from the grid (its grid relay
-    reports anything but "Pull-in"); False while connected; None when not reported."""
-    if not isinstance(status, str) or not status.strip():
+    """True when the inverter has disconnected itself from the grid ("Break"), False
+    while connected ("Pull-in"), None when not reported or an unknown value (then the
+    voltage limits decide, so an odd value can't keep the boiler off)."""
+    if not isinstance(status, str):
         return None
-    return status.strip().lower() != RELAY_CLOSED
+    return RELAY_STATES.get(status.strip().lower())
 
 
 def device_readings(
