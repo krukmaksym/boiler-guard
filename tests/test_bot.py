@@ -153,8 +153,16 @@ class AdminButtonsTest(unittest.TestCase):
             return bot.control_message("on", None, False, voltage=voltage, off_grid=off_grid)
 
         self.assertEqual(reply(240.0, off_grid=True), bot.AUTO_WAIT_OFF_GRID_MESSAGE)
-        self.assertIn("Світло є, але напруга в мережі (196 В) поза нормою", reply(196.0))
-        self.assertIn("(207 В)", reply(207.0))  # dead band after a low-voltage switch-off
+        self.assertIn("напруга (196 В) нижча за поріг увімкнення бойлера (210 В)", reply(196.0))
+        band = reply(209.0)  # dead band after a low-voltage switch-off: not "out of range"
+        self.assertIn("напруга (209 В) нижча за поріг увімкнення бойлера (210 В)", band)
+        self.assertIn("коли напруга підніметься до 210 В.", band)
+        self.assertNotIn("поза нормою", band)
+        high = reply(258.0)
+        self.assertIn("напруга (258 В) вища за поріг увімкнення бойлера (255 В)", high)
+        self.assertIn("коли напруга опуститься до 255 В.", high)
+        waits = bot.control_message("on", None, False, voltage=209.0, limits={"cooldown_minutes": 10})
+        self.assertIn("підніметься до 210 В і протримається 10 хв.", waits)
         for no_grid in (None, 0.0):
             self.assertEqual(reply(no_grid), bot.AUTO_WAIT_MESSAGE)
             self.assertEqual(reply(no_grid, off_grid=True), bot.AUTO_WAIT_MESSAGE)  # an outage

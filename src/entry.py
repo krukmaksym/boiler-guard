@@ -796,7 +796,22 @@ class Default(WorkerEntrypoint):
         except logic.ApiError:
             return bot.STATE_FAILED_MESSAGE
         off_grid = logic.relay_open(run.get("relay")) is True
-        return bot.control_message(action, target, switched, voltage=run.get("voltage"), off_grid=off_grid)
+        voltage = run.get("voltage")
+        return bot.control_message(
+            action, target, switched, voltage=voltage, off_grid=off_grid, limits=self.reply_limits()
+        )
+
+    def reply_limits(self):
+        """The thresholds a refused "on" reply names; {} (the defaults) if misconfigured."""
+        try:
+            thresholds = self.thresholds()
+            return {
+                "on_at": thresholds["on_at"],
+                "high_on": thresholds["high_on"],
+                "cooldown_minutes": round(self.cooldown_seconds() / 60),
+            }
+        except (ConfigError, ValueError):
+            return {}
 
     async def poll_plug(self):
         """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""

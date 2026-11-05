@@ -398,6 +398,16 @@ class VoltageCooldownTest(EntryTestCase):
         snapshot = await worker.status_snapshot(run)
         self.assertAlmostEqual(snapshot["load_amps"], 1930 / 53 / 0.95)
 
+    async def test_refused_on_in_the_dead_band_names_the_threshold(self):
+        worker = self.worker({entry.DESIRED_KEY: entry.COOLDOWN_OFF})
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(209.0, relay="Pull-in"))
+        reply = await worker.apply_control(logic.ON, {})
+        self.assertIn("нижча за поріг увімкнення бойлера (210 В)", reply)
+        self.assertIn("підніметься до 210 В і протримається 10 хв.", reply)
+        worker.env.ON_VOLTAGE = "212"
+        reply = await worker.apply_control(logic.ON, {})
+        self.assertIn("(212 В)", reply)  # follows the configured threshold
+
     async def test_no_cooldown_when_set_to_zero(self):
         worker = await self.low_voltage_off()
         worker.env.VOLTAGE_COOLDOWN_SECONDS = "0"

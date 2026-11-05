@@ -82,14 +82,18 @@ AUTO_WAIT_OFF_GRID_MESSAGE = (
 )
 
 
-def auto_wait_voltage_message(voltage):
-    """Grid is present, but its voltage keeps the boiler off (out of range, or not yet
-    back at ON_VOLTAGE after a low-voltage switch-off)."""
-    return (
-        f"🔌 Автоматичний режим відновлено. Світло є, але напруга в мережі ({voltage:.0f} В) "
-        "поза нормою для бойлера, тому він не вмикається. Він увімкнеться сам, коли напруга "
-        "нормалізується."
-    )
+def auto_wait_voltage_message(voltage, on_at=210.0, high_on=255.0, cooldown_minutes=0):
+    """Grid is present, but its voltage keeps the boiler off: below ON_VOLTAGE (too low,
+    or not yet back up after a low-voltage switch-off) or above HIGH_ON_VOLTAGE. Names
+    the exact threshold, since e.g. 209 V is not "out of range", just not high enough."""
+    wait = f" і протримається {cooldown_minutes} хв" if cooldown_minutes else ""
+    if voltage > high_on:
+        reason = f"напруга ({voltage:.0f} В) вища за поріг увімкнення бойлера ({high_on:.0f} В)"
+        until = f"коли напруга опуститься до {high_on:.0f} В{wait}"
+    else:
+        reason = f"напруга ({voltage:.0f} В) нижча за поріг увімкнення бойлера ({on_at:.0f} В)"
+        until = f"коли напруга підніметься до {on_at:.0f} В{wait}"
+    return f"🔌 Автоматичний режим відновлено. Світло є, але {reason}. Він увімкнеться сам, {until}."
 
 
 PROD_HOLD_MESSAGE = (  # test Worker only
@@ -201,18 +205,21 @@ def replies(found):
     return latest
 
 
-def control_message(action, target, switched, voltage=None, off_grid=False):
+def control_message(action, target, switched, voltage=None, off_grid=False, limits=None):
     """Reply to a button press. Says whether the plug was actually switched or was
     already in that state, so the admin isn't told "switched on" for a no-op. When "on"
     is refused, says why: voltage (this run's reading) shows whether grid is present,
-    off_grid that the inverter has disconnected itself from it."""
+    off_grid that the inverter has disconnected itself from it. limits: on_at, high_on
+    and cooldown_minutes for auto_wait_voltage_message."""
     if action == "off":
         head = "⛔ Бойлер вимкнено вручну." if switched else "⛔ Бойлер вже вимкнено."
         return f"{head} {HOLD_NOTE}"
     if target != "on":
         if logic.grid_condition(voltage) in (None, "lost"):
             return AUTO_WAIT_MESSAGE
-        return AUTO_WAIT_OFF_GRID_MESSAGE if off_grid else auto_wait_voltage_message(voltage)
+        if off_grid:
+            return AUTO_WAIT_OFF_GRID_MESSAGE
+        return auto_wait_voltage_message(voltage, **(limits or {}))
     if switched:
         return f"🔌 Бойлер увімкнено. {AUTO_NOTE}"
     return "🔌 Бойлер вже увімкнено. Ним керує автоматичний захист."
