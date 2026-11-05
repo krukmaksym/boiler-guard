@@ -23,7 +23,7 @@ POLL_DELAY_SECONDS = 60  # polling: how late a cron run may see a press
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
 BATTERY_IDLE_WATTS = 20  # battery power below this (either way) counts as neither charging nor discharging
-BATTERY_FULL_PERCENT = 99  # from here a trickle charge (or idle) reads as "fully charged"
+BATTERY_FULL_PERCENT = 100  # at 100% a trickle charge (or idle) reads as "fully charged"
 
 # Persistent keyboard under the input field (posted by scripts/telegram_menu.py).
 # A press posts the button's text as the user's own message. The bot needs group

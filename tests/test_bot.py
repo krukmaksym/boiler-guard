@@ -228,7 +228,7 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("🔋 Батарея 100%, повністю заряджена", text(100.0, -47.0))  # a trickle, not "charging"
         self.assertIn("🔋 Батарея 100%, повністю заряджена", text(100.0, -5.0))
         self.assertIn("🔋 Батарея 100%, розряджається: 300 Вт", text(100.0, 300.0))
-        self.assertIn("🔋 Батарея 98%, заряджається: 47 Вт", text(98.0, -47.0))
+        self.assertIn("🔋 Батарея 99%, заряджається: 47 Вт", text(99.0, -47.0))
         self.assertIn("🔋 Батарея 60%, не заряджається і не розряджається", text(60.0, -5.0))
         self.assertIn("🔋 Батарея заряджається: 300 Вт", text(None, -300.0))
         self.assertIn("🔋 Батарея 80%\n", text(80.0, None))  # power unknown
