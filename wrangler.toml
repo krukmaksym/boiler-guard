@@ -38,7 +38,10 @@ BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 BATTERY_VOLTAGE_KEY = "BatteryVoltage"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
-ON_VOLTAGE = "210"
+# ON_VOLTAGE is OFF_VOLTAGE plus the drop the boiler's own load causes on this weak
+# grid (11-13 V measured on 2026-11-05/06) plus a margin: switching on at 210-213 V
+# pulled the voltage under 205 V within minutes, so the boiler cycled on and off.
+ON_VOLTAGE = "220"
 OFF_VOLTAGE = "205"
 # The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
 # its grid relay, and reconnects only at HIGH_ON_VOLTAGE ("Grid V High (Reconnect)") or
@@ -97,7 +100,10 @@ BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 BATTERY_VOLTAGE_KEY = "BatteryVoltage"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
-ON_VOLTAGE = "210"
+# ON_VOLTAGE is OFF_VOLTAGE plus the drop the boiler's own load causes on this weak
+# grid (11-13 V measured on 2026-11-05/06) plus a margin: switching on at 210-213 V
+# pulled the voltage under 205 V within minutes, so the boiler cycled on and off.
+ON_VOLTAGE = "220"
 OFF_VOLTAGE = "205"
 # The inverter's grid limits: above HIGH_OFF_VOLTAGE ("Grid V High (Normal)") it opens
 # its grid relay, and reconnects only at HIGH_ON_VOLTAGE ("Grid V High (Reconnect)") or
