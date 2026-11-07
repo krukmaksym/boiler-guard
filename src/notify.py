@@ -168,7 +168,7 @@ BLIND_REASONS = {
 def blind_message(reason=None):
     cause = BLIND_REASONS.get(reason)
     return (
-        "⚠️ Вже 5 хвилин немає даних від інвертора Deye"
+        "⚠️ Вже 5 хвилин немає даних від інвертора Deye"  # BLIND_AFTER_SECONDS, fixed in code
         + (f": {cause}" if cause else "")
         + ". Автоматичне вимкнення бойлера тимчасово не працює. "
         "Якщо зникне світло — вимкніть бойлер вручну."

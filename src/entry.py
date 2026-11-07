@@ -698,12 +698,10 @@ class Default(WorkerEntrypoint):
             "relay": run.get("relay"),
             "load": run.get("load"),
             "load_amps": logic.battery_amps(run.get("load"), run.get("battery_voltage")),
-            "off_below": float(self.var("OFF_VOLTAGE", "205")),
-            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
             "manual_off": await self.held_off(),
             "power": power,
             "wait_seconds": await self.cooldown_remaining(),
-            **self.reply_limits(),
+            **self.reply_limits(with_off=True),
         }
 
     async def cooldown_remaining(self):
@@ -807,15 +805,20 @@ class Default(WorkerEntrypoint):
             action, target, switched, voltage=voltage, off_grid=off_grid, limits=self.reply_limits()
         )
 
-    def reply_limits(self):
-        """The thresholds a refused "on" reply names; {} (the defaults) if misconfigured."""
+    def reply_limits(self, with_off=False):
+        """The thresholds messages name, read from the Worker's variables on every call,
+        so a config change shows up in the very next message. {} (the code's defaults)
+        if misconfigured. with_off: also off_below and high_off (for /status)."""
         try:
             thresholds = self.thresholds()
-            return {
+            limits = {
                 "on_at": thresholds["on_at"],
                 "high_on": thresholds["high_on"],
                 "cooldown_minutes": round(self.cooldown_seconds() / 60),
             }
+            if with_off:
+                limits.update(off_below=thresholds["off_below"], high_off=thresholds["high_off"])
+            return limits
         except (ConfigError, ValueError):
             return {}
 
