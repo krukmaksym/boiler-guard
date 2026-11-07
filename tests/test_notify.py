@@ -89,8 +89,8 @@ class SwitchTest(unittest.TestCase):
     def test_high_voltage_off_and_back(self):
         state = {}
         off = notify.on_switched(state, "on", "off", 268.4, switched=True, now=T0, cooldown_minutes=10)
-        self.assertIn("Висока напруга в мережі: 268.4 В (поріг 265 В)", off)
-        self.assertIn("опуститься до 255 В і протримається 10 хв", off)
+        self.assertIn("Висока напруга в мережі: 268.4 В, вища за 265 В, тож бойлер вимкнено.", off)
+        self.assertIn("Бойлер увімкнеться, коли напруга опуститься до 255 В і протримається 10 хв", off)
         on = notify.on_switched(state, "off", "on", 240.0, switched=True, now=T0 + 30 * 60)
         self.assertIn("Висока напруга трималася 30 хв.", on)
         self.assertEqual(state, {})
@@ -150,8 +150,9 @@ class SwitchTest(unittest.TestCase):
         off = notify.on_switched(state, "on", "off", 204.2, switched=True, off_below=205.0, on_at=210.0)
         self.assertIn("Низька напруга", off)
         self.assertIn("204.2 В", off)
-        self.assertIn("поріг 205 В", off)
-        self.assertIn("до 210 В", off)
+        self.assertIn("204.2 В, нижча за 205 В, тож бойлер вимкнено.", off)
+        self.assertIn("Він увімкнеться, коли напруга підніметься до 210 В", off)
+        self.assertNotIn("поріг", off)
         self.assertNotIn("Зникло світло", off)
         on = notify.on_switched(state, "off", "on", 213.4, switched=True)
         self.assertIn("Напруга в мережі відновилася", on)
