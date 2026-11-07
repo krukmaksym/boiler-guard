@@ -293,11 +293,12 @@ def status_message(
     elif condition == "lost":
         lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
     elif condition == "low":
-        lines.append(
-            f"📉 Світло є, але напруга занизька для бойлера: {voltage:.0f} В (поріг {off_below:.0f} В)"
-        )
+        # No threshold here: the boiler switches *off* below OFF_VOLTAGE, but back on
+        # only at ON_VOLTAGE, which the ⏳ line below names; showing both read as a
+        # contradiction ("поріг 205 В" next to "підніметься до 220 В").
+        lines.append(f"📉 Світло є, але напруга занизька для бойлера: {voltage:.0f} В")
     elif condition == "high":
-        lines.append(f"📈 Світло є, але напруга зависока: {voltage:.0f} В (поріг {high_off:.0f} В)")
+        lines.append(f"📈 Світло є, але напруга зависока для бойлера: {voltage:.0f} В")
     else:
         lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
     disconnected = logic.relay_open(relay)

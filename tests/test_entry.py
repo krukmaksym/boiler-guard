@@ -635,6 +635,61 @@ class PlugStateTest(EntryTestCase):
             await worker.check({}, [], {})
 
 
+class MessagesFollowConfigTest(EntryTestCase):
+    """Every number a message names comes from the Worker's variables, read on each
+    call, so changing the config changes the next message (no hard-coded values)."""
+
+    CONFIG = {
+        "OFF_VOLTAGE": "197",
+        "ON_VOLTAGE": "214",
+        "HIGH_ON_VOLTAGE": "250",
+        "HIGH_OFF_VOLTAGE": "260",
+        "VOLTAGE_COOLDOWN_SECONDS": "300",
+    }
+
+    def configured(self, *args, **kwargs):
+        worker = self.worker(*args, **kwargs)
+        for name, value in self.CONFIG.items():
+            setattr(worker.env, name, value)
+        return worker
+
+    async def test_switch_off_alerts(self):
+        for volts, expected in (
+            (
+                196.0,
+                "196.0 В, нижча за 197 В, тож бойлер вимкнено. Він увімкнеться, коли напруга "
+                "підніметься до 214 В і протримається 5 хв.",
+            ),
+            (262.0, "262.0 В, вища за 260 В, тож бойлер вимкнено."),
+        ):
+            worker = self.configured({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=volts)
+            outbox = []
+            await worker.check({}, outbox, {})
+            self.assertIn(expected, outbox[-1])
+        self.assertIn("опуститься до 250 В і протримається 5 хв", outbox[-1])
+
+    async def test_status_and_refused_on(self):
+        worker = self.configured({entry.DESIRED_KEY: entry.COOLDOWN_OFF}, voltage=205.0)
+        snapshot = await worker.status_snapshot({"voltage": 205.0})
+        for key, value in (("off_below", 197.0), ("on_at", 214.0), ("high_on", 250.0), ("high_off", 260.0)):
+            self.assertEqual(snapshot[key], value)
+        status = bot.status_message(**snapshot)
+        self.assertIn(
+            "⏳ Бойлер увімкнеться сам, коли напруга підніметься до 214 В і протримається 5 хв", status
+        )
+        reply = await worker.apply_control(logic.ON, {})
+        self.assertIn("нижча за поріг увімкнення бойлера (214 В)", reply)
+        self.assertIn("протримається 5 хв.", reply)
+
+    async def test_a_change_shows_up_in_the_next_message(self):
+        worker = self.configured({entry.DESIRED_KEY: entry.COOLDOWN_OFF}, voltage=205.0)
+        first = bot.status_message(**await worker.status_snapshot({"voltage": 205.0}))
+        worker.env.ON_VOLTAGE = "208"  # e.g. edited in the Cloudflare dashboard
+        second = bot.status_message(**await worker.status_snapshot({"voltage": 205.0}))
+        self.assertIn("до 214 В", first)
+        self.assertIn("до 208 В", second)
+
+
 class ConfigCheckTest(EntryTestCase):
     async def test_on_voltage_below_off_voltage_is_a_config_error(self):
         worker = self.worker()

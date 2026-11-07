@@ -95,28 +95,26 @@ def _cooldown_tail(cooldown_minutes):
 
 
 def low_voltage_message(voltage, switched, off_below, on_at, cooldown_minutes=0):
-    """Grid is present but below OFF_VOLTAGE. One decimal: 204.6 V must not read as 205 V."""
-    head = f"📉 Низька напруга в мережі: {voltage:.1f} В (поріг {off_below:.0f} В)."
+    """Grid is present but below OFF_VOLTAGE. One decimal: 194.6 V must not read as 195 V.
+    Says what each number means: a bare "(поріг 195 В)" next to "підніметься до 210 В"
+    read as two contradicting thresholds."""
+    head = f"📉 Низька напруга в мережі: {voltage:.1f} В, нижча за {off_below:.0f} В,"
+    until = f"коли напруга підніметься до {on_at:.0f} В{_cooldown_tail(cooldown_minutes)}"
     if not switched:
-        return f"{head} Бойлер уже був вимкнений."
-    return (
-        f"{head} Бойлер вимкнено; він увімкнеться, коли напруга підніметься до {on_at:.0f} В"
-        f"{_cooldown_tail(cooldown_minutes)}."
-    )
+        return f"{head} а бойлер уже був вимкнений. Він увімкнеться, {until}."
+    return f"{head} тож бойлер вимкнено. Він увімкнеться, {until}."
 
 
 def high_voltage_message(voltage, switched, high_off, high_on, cooldown_minutes=0, on_grid=False):
     """Grid is present but above HIGH_OFF_VOLTAGE. on_grid: Deye says the inverter's
     grid relay is still closed, so the note that it disconnects is left out."""
-    head = f"📈 Висока напруга в мережі: {voltage:.1f} В (поріг {high_off:.0f} В)."
+    head = f"📈 Висока напруга в мережі: {voltage:.1f} В, вища за {high_off:.0f} В,"
+    head += " а бойлер уже був вимкнений." if not switched else " тож бойлер вимкнено."
     if not on_grid:
         head = f"{head} {INVERTER_ISLAND_NOTE}"
-    if not switched:
-        return f"{head} Бойлер уже був вимкнений."
-    return (
-        f"{head} Бойлер вимкнено; він увімкнеться, коли напруга опуститься до {high_on:.0f} В"
-        f"{_cooldown_tail(cooldown_minutes)}."
-    )
+    until = f"коли напруга опуститься до {high_on:.0f} В{_cooldown_tail(cooldown_minutes)}"
+    # "Бойлер", not "Він": after the inverter note "він" would read as the inverter.
+    return f"{head} Бойлер увімкнеться, {until}."
 
 
 def disconnected_message(voltage, switched, cooldown_minutes=0):
@@ -170,7 +168,7 @@ BLIND_REASONS = {
 def blind_message(reason=None):
     cause = BLIND_REASONS.get(reason)
     return (
-        "⚠️ Вже 5 хвилин немає даних від інвертора Deye"
+        "⚠️ Вже 5 хвилин немає даних від інвертора Deye"  # BLIND_AFTER_SECONDS, fixed in code
         + (f": {cause}" if cause else "")
         + ". Автоматичне вимкнення бойлера тимчасово не працює. "
         "Якщо зникне світло — вимкніть бойлер вручну."
