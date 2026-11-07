@@ -210,10 +210,12 @@ class StatusMessageTest(unittest.TestCase):
 
     def test_low_and_high_voltage_with_grid_present(self):
         low = bot.status_message(190.0, "off", 80.0)
-        self.assertIn("Світло є, але напруга занизька для бойлера: 190 В (поріг 205 В)", low)
+        self.assertIn("Світло є, але напруга занизька для бойлера: 190 В\n", low)
+        self.assertNotIn("поріг", low)  # only the ⏳ line names a threshold: the switch-on one
         self.assertNotIn("Інвертор", low)  # its own low limit (180 V) is far below OFF_VOLTAGE
         high = bot.status_message(268.0, "off", 80.0)
-        self.assertIn("Світло є, але напруга зависока: 268 В (поріг 265 В)", high)
+        self.assertIn("Світло є, але напруга зависока для бойлера: 268 В\n", high)
+        self.assertNotIn("поріг", high)
         self.assertIn("Інвертор відключився від мережі", high)  # relay unknown: by voltage
 
     def test_grid_relay(self):
@@ -253,6 +255,14 @@ class StatusMessageTest(unittest.TestCase):
         self.assertNotIn(countdown, bot.status_message(196.0, "off", 80.0, wait_seconds=290))
         self.assertNotIn(countdown, bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Break"))
         self.assertIn(countdown, bot.status_message(240.0, "off", 80.0, wait_seconds=290, relay="Pull-in"))
+
+    def test_the_screenshot_of_2026_11_07(self):
+        text = bot.status_message(191.0, "off", 41.0, on_at=220.0, cooldown_minutes=10)
+        self.assertIn("📉 Світло є, але напруга занизька для бойлера: 191 В\n", text)
+        self.assertIn(
+            "⏳ Бойлер увімкнеться сам, коли напруга підніметься до 220 В і протримається 10 хв", text
+        )
+        self.assertNotIn("205", text)
 
     def test_why_an_off_boiler_stays_off(self):
         def text(voltage, plug="off", **kwargs):
