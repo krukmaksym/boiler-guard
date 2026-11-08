@@ -400,6 +400,14 @@ def battery_state(soc, watts):
     return "idle"
 
 
+def battery_direction(soc, watts):
+    """ "charging" or "discharging" for the battery's duration, else None. Idle and full
+    don't count as a change: while the charge tapers off near full, the power wobbles
+    around BATTERY_IDLE_WATTS, and every "idle" reading would restart "заряджається"."""
+    state = battery_state(soc, watts)
+    return state if state in ("charging", "discharging") else None
+
+
 def grid_presence(voltage):
     """ "present" (any voltage from GRID_LOST_BELOW up), "absent", or None (no reading)."""
     condition = grid_condition(voltage)

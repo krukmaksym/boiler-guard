@@ -138,6 +138,13 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(logic.battery_state(50.0, 5.0), "idle")
         self.assertIsNone(logic.battery_state(50.0, None))
 
+    def test_battery_direction(self):
+        self.assertEqual(logic.battery_direction(50.0, -1000.0), "charging")
+        self.assertEqual(logic.battery_direction(50.0, 640.0), "discharging")
+        self.assertIsNone(logic.battery_direction(99.0, -15.0))  # idle: not a change
+        self.assertIsNone(logic.battery_direction(100.0, -47.0))  # full: not a change
+        self.assertIsNone(logic.battery_direction(50.0, None))
+
     def test_grid_presence(self):
         self.assertEqual(logic.grid_presence(0.0), "absent")
         self.assertEqual(logic.grid_presence(190.0), "present")

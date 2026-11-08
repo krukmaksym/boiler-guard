@@ -736,12 +736,51 @@ class DurationsTest(EntryTestCase):
         self.at(worker, 230.0, 0)
         await worker.check({}, [], {})  # the cron switches it on
         self.assertEqual(self.switched, [logic.ON])
-        # 2 h later: it heated for 1 h 30 min in total (2475 Wh at 1650 W), idle now
-        self.energy, self.power = 5000.0 + 2475.0, 0.0
+        # 2 h later: it heated for 1 h 30 min in total (2505 Wh at 1670 W, 230 V), idle now
+        self.energy, self.power = 5000.0 + 2505.0, 0.0
         self.at(worker, 230.0, 120)
         text = await self.status(worker)
         self.assertIn("🔥 Бойлер увімкнений 2 год, з них нагрівав воду 1 год 30 хв", text)
         self.assertIn("(вода нагріта)", text)
+
+    async def test_idle_heating_power_follows_the_grid_voltage(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF)
+        self.energy = 0.0
+        self.at(worker, 230.0, 0)
+        await worker.check({}, [], {})
+        watts_at_207 = 1670.0 * (207 / 230) ** 2  # ≈ 1353 W, as seen on 2026-11-08 (1366 W)
+        self.energy, self.power = watts_at_207, 0.0  # one hour's worth at 207 V
+        self.at(worker, 207.0, 90)
+        self.assertIn("з них нагрівав воду 1 год\n", await self.status(worker))
+
+    async def test_charging_time_survives_the_taper_near_full(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF})
+        self.at(worker, 230.0, 0, battery=640.0)
+        await worker.check({}, [], {})  # discharging known
+        self.at(worker, 230.0, 10, battery=-1000.0, soc=80.0)
+        await worker.check({}, [], {})  # charging starts: an exact change
+        for minute, watts in ((60, -15.0), (61, -25.0), (62, -12.0)):  # taper wobbles around 20 W
+            self.at(worker, 230.0, minute, battery=watts, soc=99.0)
+            await worker.check({}, [], {})
+        self.at(worker, 230.0, 70, battery=-30.0, soc=99.0)
+        self.assertIn("заряджається 1 год: 30 Вт", await self.status(worker))
+
+    async def test_a_change_seen_after_a_data_gap_has_no_duration(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF})
+        state = {}
+        self.at(worker, 230.0, 0)
+        await worker.check(state, [], {})
+        self.at(worker, None, 1)  # Deye silent: the outage starts somewhere in here
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(problem=("stale", "no upload")))
+        await worker.check(state, [], {})
+        self.at(worker, 0.0, 30)
+        await worker.check(state, [], {})  # first seen after the gap
+        self.at(worker, 0.0, 40)
+        self.assertIn("⚡️ Світла немає (мережа 0 В)", await self.status(worker))
+        self.at(worker, 225.0, 50)
+        await worker.check(state, [], {})  # an ordinary change again: exact
+        self.at(worker, 225.0, 60)
+        self.assertIn("💡 Світло є 10 хв", await self.status(worker))
 
     async def test_heating_time_uses_the_measured_power_while_heating(self):
         worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF)

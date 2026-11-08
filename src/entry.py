@@ -119,7 +119,7 @@ READ_BACK_KEYS = frozenset({DESIRED_KEY, MODE_KEY})
 # For /status durations: since when the grid, the battery and the boiler have been in
 # their current state (logic.track). Display only, so it's not mirrored to KV.
 TIMELINE_KEY = "state:timeline"
-BOILER_WATTS = "1650"  # default heating power, when Shelly isn't reporting it right now
+BOILER_WATTS = "1670"  # heating power at 230 V, when Shelly isn't reporting it right now
 
 
 class PlugState(DurableObject):
@@ -423,12 +423,19 @@ class Default(WorkerEntrypoint):
         energy = logic.plug_energy(data, channel) if state == logic.ON else None
         await self.track(boiler={"state": state, "certain": switched, "wh": energy})
 
-    def boiler_watts(self):
+    def boiler_watts(self, voltage=None):
+        """The boiler's heating power at this grid voltage: BOILER_WATTS is its power at
+        230 V, and a heater's power goes with the voltage squared (1366-1656 W were seen
+        at 207-229 V). The nominal value when the voltage is unknown or not grid."""
         try:
             value = float(self.var("BOILER_WATTS", BOILER_WATTS))
         except ValueError:
             value = float(BOILER_WATTS)
-        return value if value > 0 else float(BOILER_WATTS)
+        if not value > 0:
+            value = float(BOILER_WATTS)
+        if logic.grid_presence(voltage) == "present":
+            value *= (voltage / 230.0) ** 2
+        return value
 
     async def prod_held_off(self):
         """Test Worker only: True while production's admin holds the boiler off. Both
@@ -891,21 +898,19 @@ class Default(WorkerEntrypoint):
         voltage = run.get("voltage")
         timeline = await self.track(
             grid={"state": logic.grid_presence(voltage), "exact": True},
-            battery={"state": logic.battery_state(run.get("soc"), run.get("battery")), "exact": True},
+            battery={"state": logic.battery_direction(run.get("soc"), run.get("battery")), "exact": True},
             boiler={"state": plug, "wh": energy if plug == logic.ON else None},
         )
         now = time.time()  # after track(): a state first seen just now must not be in the future
         found = {}
         current = {
             "grid": logic.grid_presence(voltage),
-            "battery": logic.battery_state(run.get("soc"), run.get("battery")),
+            "battery": logic.battery_direction(run.get("soc"), run.get("battery")),
             "boiler": plug,
         }
         for name, state in current.items():
             entry = timeline.get(name)
             if not isinstance(entry, dict) or entry.get("state") != state or state is None:
-                continue
-            if name == "battery" and state not in ("charging", "discharging"):
                 continue
             if name == "boiler" and state != logic.ON:
                 continue
@@ -915,9 +920,8 @@ class Default(WorkerEntrypoint):
                 if name == "boiler":
                     base = entry.get("wh")
                     if isinstance(base, (int, float)) and energy is not None and energy >= base:
-                        watts = (
-                            power if power is not None and power >= bot.HEATING_WATTS else self.boiler_watts()
-                        )
+                        heating_now = power is not None and power >= bot.HEATING_WATTS
+                        watts = power if heating_now else self.boiler_watts(voltage)
                         found["heated"] = (energy - base) / watts * 3600
         return found
 
@@ -961,14 +965,17 @@ class Default(WorkerEntrypoint):
         voltage, relay, problem = reading.voltage, reading.relay, reading.problem
         relay_state = logic.relay_open(relay)  # True: off grid, False: on grid, None: unknown
         disconnected = relay_state is True
+        after_gap = "blind_since" in state  # the previous run(s) had no trustworthy reading
         outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
         if voltage is None:
             log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
             await self.enforce_hold(secrets, channel, run)  # switching off is always safe
             return
+        # A change first seen after a gap in Deye's data may have happened any time
+        # during the gap, so it gets no exact start (and so no duration).
         await self.track(
-            grid={"state": logic.grid_presence(voltage), "exact": True},
-            battery={"state": logic.battery_state(reading.soc, reading.battery), "exact": True},
+            grid={"state": logic.grid_presence(voltage), "exact": not after_gap},
+            battery={"state": logic.battery_direction(reading.soc, reading.battery), "exact": not after_gap},
         )
 
         saved, previous = await self.saved_desired()
