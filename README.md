@@ -189,7 +189,9 @@ It also says for how long things have been as they are: the grid present or abse
 the battery charging or discharging, and the boiler switched on, with how long it has
 actually heated water since (the plug's energy counter divided by its heating power,
 `BOILER_WATTS` when it isn't heating right now). These times live in the `PlugState`
-Durable Object; a state that already held when tracking began reads "понад …". `/start` or `/help` explain what it does.
+Durable Object. A duration appears once the bot has seen that state begin (a change
+it observed, or a switch it made); before that, e.g. right after a deploy, the line
+shows no duration rather than a misleading "понад 3 хв". `/start` or `/help` explain what it does.
 
 The power line tells whether the boiler is actually heating: from 20 W up it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is

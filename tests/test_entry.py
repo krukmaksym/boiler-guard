@@ -719,8 +719,10 @@ class DurationsTest(EntryTestCase):
         await worker.check({}, [], {})
         self.at(worker, 0.0, 30, battery=640.0)
         text = await self.status(worker)
-        self.assertIn("⚡️ Світла немає понад 30 хв (мережа 0 В)", text)
-        self.assertIn("розряджається понад 30 хв: 640 Вт", text)
+        # Already so when tracking began (e.g. right after a deploy): no misleading
+        # "понад 30 хв" while it may have lasted for hours.
+        self.assertIn("⚡️ Світла немає (мережа 0 В)", text)
+        self.assertIn("розряджається: 640 Вт", text)
         self.at(worker, 225.0, 40, battery=-1000.0)  # grid back: an exact change
         await worker.check({}, [], {})
         self.at(worker, 225.0, 85, battery=-1000.0)
@@ -750,16 +752,29 @@ class DurationsTest(EntryTestCase):
         self.at(worker, 230.0, 30)
         self.assertIn("з них нагрівав воду 30 хв", await self.status(worker))
 
-    async def test_a_boiler_switched_on_by_hand_counts_from_when_it_was_seen(self):
+    async def test_a_boiler_already_on_shows_no_duration_until_switched(self):
+        """The 2026-11-08 screenshot: on since before the deploy, first seen by /status."""
         worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON)
-        self.energy, self.power = 50.0, 0.0
-        self.at(worker, 230.0, 0)
+        self.energy, self.power = 50.0, 1534.0
+        self.at(worker, 220.0, 0)
         await self.status(worker)  # first seen on here
         self.energy = 50.0 + 825.0
-        self.at(worker, 230.0, 60)
-        self.assertIn(
-            "🔥 Бойлер увімкнений понад 1 год, з них нагрівав воду 30 хв", await self.status(worker)
-        )
+        self.at(worker, 220.0, 60)
+        text = await self.status(worker)
+        self.assertIn("🔥 Бойлер увімкнений\n", text)
+        self.assertNotIn("нагрівав", text)
+
+    async def test_a_change_first_seen_by_status_itself_is_shown(self):
+        """The clock moves on between calls: the change's own timestamp must not count
+        as "in the future" and be dropped (the bug in the first version)."""
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF})
+        self.at(worker, 0.0, 0)
+        await worker.check({}, [], {})  # outage known
+        self.at(worker, 225.0, 5)
+        ticks = iter(self.now + n * 0.001 for n in range(100))
+        with mock.patch.object(entry.time, "time", lambda: next(ticks)):
+            text = await self.status(worker)  # the grid's return is first seen here
+        self.assertIn("💡 Світло є 1 хв (мережа 225 В)", text)
 
     async def test_no_energy_counter_means_no_heating_time(self):
         worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF)

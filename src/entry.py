@@ -881,17 +881,20 @@ class Default(WorkerEntrypoint):
         )
 
     async def durations(self, run, plug, power, energy):
-        """For /status: {"grid"|"battery"|"boiler": (seconds, exact), "heated": seconds}
-        for whatever is known. Records this observation too (a boiler switched by hand
-        is first seen here). The heating time is the energy used since the switch-on
-        divided by the heating power: the thermostat's on/off cycles add up correctly."""
-        now = time.time()
+        """For /status: {"grid"|"battery"|"boiler": (seconds, True), "heated": seconds}
+        for what the bot saw start. Records this observation too (a boiler switched by
+        hand is first seen here). A state that already held when tracking began, or a
+        hand switch noticed only later, shows no duration: "понад 3 хв" right after a
+        deploy, while the grid had been on for hours, was true but misleading. The
+        heating time is the energy used since the switch-on divided by the heating
+        power: the thermostat's on/off cycles add up correctly."""
         voltage = run.get("voltage")
         timeline = await self.track(
             grid={"state": logic.grid_presence(voltage), "exact": True},
             battery={"state": logic.battery_state(run.get("soc"), run.get("battery")), "exact": True},
             boiler={"state": plug, "wh": energy if plug == logic.ON else None},
         )
+        now = time.time()  # after track(): a state first seen just now must not be in the future
         found = {}
         current = {
             "grid": logic.grid_presence(voltage),
@@ -907,8 +910,8 @@ class Default(WorkerEntrypoint):
             if name == "boiler" and state != logic.ON:
                 continue
             since = entry.get("since")
-            if isinstance(since, (int, float)) and now >= since:
-                found[name] = (now - since, bool(entry.get("exact")))
+            if isinstance(since, (int, float)) and entry.get("exact"):
+                found[name] = (max(now - since, 0.0), True)
                 if name == "boiler":
                     base = entry.get("wh")
                     if isinstance(base, (int, float)) and energy is not None and energy >= base:
