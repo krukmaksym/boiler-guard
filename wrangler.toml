@@ -37,9 +37,10 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 BATTERY_VOLTAGE_KEY = "BatteryVoltage"
-# The boiler's heating power (W), for /status's heating time while it isn't heating
-# right now (while it is, Shelly's live reading is used).
-BOILER_WATTS = "1650"
+# The boiler's heating power (W) at 230 V, for /status's heating time while it isn't
+# heating right now (scaled by the grid voltage squared; while it is heating, Shelly's
+# live reading is used). 1656 W was measured at 229 V.
+BOILER_WATTS = "1670"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
 # The gap between ON_VOLTAGE and OFF_VOLTAGE must exceed the drop the boiler's own
 # load causes on this weak grid (11-13 V measured on 2026-11-05/06), or switching on
@@ -104,9 +105,10 @@ GRID_VOLTAGE_KEY = "GridVoltageL1L2"
 BACKUP_LOAD_KEY = "UPSLoadPower"
 BATTERY_POWER_KEY = "BatteryPower"  # Deye's sign: negative while charging
 BATTERY_VOLTAGE_KEY = "BatteryVoltage"
-# The boiler's heating power (W), for /status's heating time while it isn't heating
-# right now (while it is, Shelly's live reading is used).
-BOILER_WATTS = "1650"
+# The boiler's heating power (W) at 230 V, for /status's heating time while it isn't
+# heating right now (scaled by the grid voltage squared; while it is heating, Shelly's
+# live reading is used). 1656 W was measured at 229 V.
+BOILER_WATTS = "1670"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
 # The gap between ON_VOLTAGE and OFF_VOLTAGE must exceed the drop the boiler's own
 # load causes on this weak grid (11-13 V measured on 2026-11-05/06), or switching on

@@ -187,8 +187,11 @@ range, or the inverter has disconnected itself from the grid, it says so, and
 during the voltage cooldown it says roughly when the boiler will switch back on.
 It also says for how long things have been as they are: the grid present or absent,
 the battery charging or discharging, and the boiler switched on, with how long it has
-actually heated water since (the plug's energy counter divided by its heating power,
-`BOILER_WATTS` when it isn't heating right now). These times live in the `PlugState`
+actually heated water since (the plug's energy counter divided by its heating power:
+Shelly's live reading, or `BOILER_WATTS` at 230 V scaled by the grid voltage squared
+when it isn't heating right now). The battery's time counts from its last change of
+direction (charging ↔ discharging), so the taper near full doesn't restart it; a
+change first seen after a gap in Deye's data shows no duration. These times live in the `PlugState`
 Durable Object. A duration appears once the bot has seen that state begin (a change
 it observed, or a switch it made); before that, e.g. right after a deploy, the line
 shows no duration rather than a misleading "понад 3 хв". `/start` or `/help` explain what it does.
