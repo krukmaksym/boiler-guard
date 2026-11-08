@@ -94,8 +94,13 @@ def split_state(state):
     return state, plug
 
 
-def shelly_status(output):
-    return {"isok": True, "data": {"online": True, "device_status": {"switch:0": {"output": output}}}}
+def shelly_status(output, power=None, energy=None):
+    switch = {"output": output}
+    if power is not None:
+        switch["apower"] = power
+    if energy is not None:
+        switch["aenergy"] = {"total": energy}
+    return {"isok": True, "data": {"online": True, "device_status": {"switch:0": switch}}}
 
 
 class EntryTestCase(unittest.IsolatedAsyncioTestCase):
@@ -114,10 +119,11 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
         worker.plug_data = env.PLUG.data  # the plug state, for assertions
         self.switched = []
         self.plug = plug
+        self.power, self.energy = None, None  # what the fake Shelly reports (W, Wh)
 
         async def shelly(path, secrets, **params):
             if path == "/device/status":
-                return shelly_status(self.plug == logic.ON)
+                return shelly_status(self.plug == logic.ON, self.power, self.energy)
             self.switched.append(params["turn"])
             self.plug = params["turn"]
             return {"isok": True}
@@ -688,6 +694,87 @@ class MessagesFollowConfigTest(EntryTestCase):
         second = bot.status_message(**await worker.status_snapshot({"voltage": 205.0}))
         self.assertIn("до 214 В", first)
         self.assertIn("до 208 В", second)
+
+
+class DurationsTest(EntryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.now = 1_800_000_000.0
+        clock = mock.patch.object(entry.time, "time", lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def at(self, worker, voltage, minutes, battery=None, soc=60.0):
+        self.now = 1_800_000_000.0 + minutes * 60
+        worker.deye_reading = mock.AsyncMock(
+            return_value=logic.Reading(voltage, soc=soc, load=100.0, battery=battery)
+        )
+
+    async def status(self, worker):
+        return bot.status_message(**await worker.status_snapshot({}))
+
+    async def test_grid_and_battery_durations(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF})
+        self.at(worker, 0.0, 0, battery=640.0)  # first seen: started at some unknown time
+        await worker.check({}, [], {})
+        self.at(worker, 0.0, 30, battery=640.0)
+        text = await self.status(worker)
+        self.assertIn("⚡️ Світла немає понад 30 хв (мережа 0 В)", text)
+        self.assertIn("розряджається понад 30 хв: 640 Вт", text)
+        self.at(worker, 225.0, 40, battery=-1000.0)  # grid back: an exact change
+        await worker.check({}, [], {})
+        self.at(worker, 225.0, 85, battery=-1000.0)
+        text = await self.status(worker)
+        self.assertIn("💡 Світло є 45 хв (мережа 225 В)", text)
+        self.assertIn("заряджається 45 хв: 1000 Вт", text)
+
+    async def test_boiler_on_time_and_heating_time(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF)
+        self.energy = 5000.0
+        self.at(worker, 230.0, 0)
+        await worker.check({}, [], {})  # the cron switches it on
+        self.assertEqual(self.switched, [logic.ON])
+        # 2 h later: it heated for 1 h 30 min in total (2475 Wh at 1650 W), idle now
+        self.energy, self.power = 5000.0 + 2475.0, 0.0
+        self.at(worker, 230.0, 120)
+        text = await self.status(worker)
+        self.assertIn("🔥 Бойлер увімкнений 2 год, з них нагрівав воду 1 год 30 хв", text)
+        self.assertIn("(вода нагріта)", text)
+
+    async def test_heating_time_uses_the_measured_power_while_heating(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF)
+        self.energy = 100.0
+        self.at(worker, 230.0, 0)
+        await worker.check({}, [], {})
+        self.energy, self.power = 100.0 + 700.0, 1400.0  # 30 min at 1400 W
+        self.at(worker, 230.0, 30)
+        self.assertIn("з них нагрівав воду 30 хв", await self.status(worker))
+
+    async def test_a_boiler_switched_on_by_hand_counts_from_when_it_was_seen(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON)
+        self.energy, self.power = 50.0, 0.0
+        self.at(worker, 230.0, 0)
+        await self.status(worker)  # first seen on here
+        self.energy = 50.0 + 825.0
+        self.at(worker, 230.0, 60)
+        self.assertIn(
+            "🔥 Бойлер увімкнений понад 1 год, з них нагрівав воду 30 хв", await self.status(worker)
+        )
+
+    async def test_no_energy_counter_means_no_heating_time(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.OFF}, plug=logic.OFF)
+        self.at(worker, 230.0, 0)
+        await worker.check({}, [], {})
+        self.at(worker, 230.0, 20)
+        text = await self.status(worker)
+        self.assertIn("🔥 Бойлер увімкнений 20 хв\n", text)
+
+    async def test_a_broken_timeline_never_breaks_the_run(self):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        worker.env.PLUG.object.track = mock.AsyncMock(side_effect=RuntimeError("storage"))
+        await worker.check({}, [], {})
+        self.assertEqual(self.switched, [logic.OFF])  # switched off anyway
+        self.assertNotIn("понад", bot.status_message(**await worker.status_snapshot({})))
 
 
 class ConfigCheckTest(EntryTestCase):

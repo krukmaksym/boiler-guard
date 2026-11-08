@@ -48,13 +48,7 @@ def _v(voltage):
     return f"{voltage:.0f} В"
 
 
-def duration_text(seconds):
-    """ "45 хв" or "2 год 5 хв"; at least 1 хв."""
-    minutes = max(round(seconds / 60), 1)
-    hours, minutes = divmod(minutes, 60)
-    if not hours:
-        return f"{minutes} хв"
-    return f"{hours} год {minutes} хв" if minutes else f"{hours} год"
+duration_text = logic.duration_text  # "45 хв" or "2 год 5 хв"
 
 
 # --- messages (Ukrainian, written for the whole family) ----------------------

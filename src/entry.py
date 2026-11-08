@@ -116,6 +116,10 @@ EXPIRES_SUFFIX = "|expires"  # epoch seconds after which a value counts as gone
 # so a mismatch means the store is broken. Without this a store that loses values
 # would fail silently: no cooldown, no outage alerts, and the admin's ⛔ ignored.
 READ_BACK_KEYS = frozenset({DESIRED_KEY, MODE_KEY})
+# For /status durations: since when the grid, the battery and the boiler have been in
+# their current state (logic.track). Display only, so it's not mirrored to KV.
+TIMELINE_KEY = "state:timeline"
+BOILER_WATTS = "1650"  # default heating power, when Shelly isn't reporting it right now
 
 
 class PlugState(DurableObject):
@@ -183,6 +187,21 @@ class PlugState(DurableObject):
         if await storage.get(key + EXPIRES_SUFFIX) is not None:
             await storage.delete(key + EXPIRES_SUFFIX)
         return "1" if existed else ""
+
+    async def track(self, updates, now):
+        """Apply observations (JSON, see logic.track) to the timeline and return it as
+        JSON. Runs in one call, with no other I/O between the read and the write, so a
+        cron run and a /status can't overwrite each other's update."""
+        storage = self.ctx.storage
+        try:
+            timeline = json.loads(await storage.get(TIMELINE_KEY) or "{}")
+        except ValueError:
+            timeline = {}
+        if not isinstance(timeline, dict):
+            timeline = {}
+        if logic.track(timeline, json.loads(updates), float(now)):
+            await storage.put(TIMELINE_KEY, json.dumps(timeline))
+        return json.dumps(timeline)
 
 
 def plug_stub(namespace):
@@ -388,6 +407,28 @@ class Default(WorkerEntrypoint):
                 await self.kv_put(key, value, ttl)
         except Exception as exc:
             log(f"KV mirror of {key} failed: {type(exc).__name__}")
+
+    async def track(self, **updates):
+        """Record observations for the /status durations and return the timeline;
+        {} if that fails (display only: it must never break the boiler logic)."""
+        try:
+            return json.loads(await self.plug().track(json.dumps(updates), time.time()))
+        except Exception as exc:
+            log(f"timeline update failed: {type(exc).__name__}")
+            return {}
+
+    async def track_boiler(self, state, data, channel, switched):
+        """The plug is now in `state`: switched just now by the bot (switched) or found
+        so. data: the Shelly status read before switching, for its energy counter."""
+        energy = logic.plug_energy(data, channel) if state == logic.ON else None
+        await self.track(boiler={"state": state, "certain": switched, "wh": energy})
+
+    def boiler_watts(self):
+        try:
+            value = float(self.var("BOILER_WATTS", BOILER_WATTS))
+        except ValueError:
+            value = float(BOILER_WATTS)
+        return value if value > 0 else float(BOILER_WATTS)
 
     async def prod_held_off(self):
         """Test Worker only: True while production's admin holds the boiler off. Both
@@ -689,7 +730,7 @@ class Default(WorkerEntrypoint):
         await self.ensure_reading(run)
         if "plug" in run:
             await asyncio.sleep(1.1)  # Shelly was already called this run (~1 request/second)
-        plug, power = await self.poll_plug()
+        plug, power, energy = await self.poll_plug()
         return {
             "voltage": run.get("voltage"),
             "plug": plug,
@@ -702,6 +743,7 @@ class Default(WorkerEntrypoint):
             "power": power,
             "wait_seconds": await self.cooldown_remaining(),
             **self.reply_limits(with_off=True),
+            "durations": await self.durations(run, plug, power, energy),
         }
 
     async def cooldown_remaining(self):
@@ -773,7 +815,8 @@ class Default(WorkerEntrypoint):
                 if "plug" in run:
                     await asyncio.sleep(1.1)  # Shelly was already called this run (~1 request/second)
                 run["plug"] = None  # marks Shelly as called, even if this call fails
-                actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
+                plug_data = await self.shelly("/device/status", secrets)
+                actual = logic.plug_state(plug_data, channel)
                 if actual is None:
                     return bot.CONTROL_FAILED_MESSAGE
                 if actual != target:
@@ -782,6 +825,7 @@ class Default(WorkerEntrypoint):
                     log(f"admin control: switched plug {actual} -> {target}")
                     switched = True
                 run["plug"] = target
+                await self.track_boiler(target, plug_data, channel, switched=switched)
             except Exception as exc:
                 log(f"admin control: Shelly failed: {type(exc).__name__}")
                 return bot.CONTROL_FAILED_MESSAGE
@@ -823,14 +867,56 @@ class Default(WorkerEntrypoint):
             return {}
 
     async def poll_plug(self):
-        """(on/off, watts) from Shelly; (None, None) when it doesn't answer."""
+        """(on/off, watts, energy Wh) from Shelly; Nones when it doesn't answer."""
         try:
             data = await self.shelly("/device/status", self.secrets())
         except Exception as exc:
             log(f"status: Shelly poll failed: {type(exc).__name__}")
-            return None, None
+            return None, None, None
         channel = int(self.var("SHELLY_CHANNEL", "0"))
-        return logic.plug_state(data, channel), logic.plug_power(data, channel)
+        return (
+            logic.plug_state(data, channel),
+            logic.plug_power(data, channel),
+            logic.plug_energy(data, channel),
+        )
+
+    async def durations(self, run, plug, power, energy):
+        """For /status: {"grid"|"battery"|"boiler": (seconds, exact), "heated": seconds}
+        for whatever is known. Records this observation too (a boiler switched by hand
+        is first seen here). The heating time is the energy used since the switch-on
+        divided by the heating power: the thermostat's on/off cycles add up correctly."""
+        now = time.time()
+        voltage = run.get("voltage")
+        timeline = await self.track(
+            grid={"state": logic.grid_presence(voltage), "exact": True},
+            battery={"state": logic.battery_state(run.get("soc"), run.get("battery")), "exact": True},
+            boiler={"state": plug, "wh": energy if plug == logic.ON else None},
+        )
+        found = {}
+        current = {
+            "grid": logic.grid_presence(voltage),
+            "battery": logic.battery_state(run.get("soc"), run.get("battery")),
+            "boiler": plug,
+        }
+        for name, state in current.items():
+            entry = timeline.get(name)
+            if not isinstance(entry, dict) or entry.get("state") != state or state is None:
+                continue
+            if name == "battery" and state not in ("charging", "discharging"):
+                continue
+            if name == "boiler" and state != logic.ON:
+                continue
+            since = entry.get("since")
+            if isinstance(since, (int, float)) and now >= since:
+                found[name] = (now - since, bool(entry.get("exact")))
+                if name == "boiler":
+                    base = entry.get("wh")
+                    if isinstance(base, (int, float)) and energy is not None and energy >= base:
+                        watts = (
+                            power if power is not None and power >= bot.HEATING_WATTS else self.boiler_watts()
+                        )
+                        found["heated"] = (energy - base) / watts * 3600
+        return found
 
     # --- main loop ----------------------------------------------------------
 
@@ -855,6 +941,7 @@ class Default(WorkerEntrypoint):
                 await self.shelly("/device/relay/control", secrets, channel=channel, turn=logic.OFF)
                 run["plug"] = logic.OFF
                 log("re-applied the admin's manual off: the plug was on while held off")
+                await self.track(boiler={"state": logic.OFF, "certain": True})
             if prod_race and actual is not None:
                 await self.state_put(DESIRED_KEY, HELD_ON)
         except Exception as exc:  # retried on the next run while the window lasts
@@ -876,6 +963,10 @@ class Default(WorkerEntrypoint):
             log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
             await self.enforce_hold(secrets, channel, run)  # switching off is always safe
             return
+        await self.track(
+            grid={"state": logic.grid_presence(voltage), "exact": True},
+            battery={"state": logic.battery_state(reading.soc, reading.battery), "exact": True},
+        )
 
         saved, previous = await self.saved_desired()
         desired = logic.desired_state(voltage, previous, **thresholds, disconnected=disconnected)
@@ -926,7 +1017,8 @@ class Default(WorkerEntrypoint):
 
         # Poll Shelly first, command only if it differs.
         run["plug"] = None  # marks Shelly as called, even if this call fails
-        actual = logic.plug_state(await self.shelly("/device/status", secrets), channel)
+        plug_data = await self.shelly("/device/status", secrets)
+        actual = logic.plug_state(plug_data, channel)
         run["plug"] = actual
         if actual is None:
             log("Shelly plug offline/unknown; will retry next run")
@@ -946,6 +1038,7 @@ class Default(WorkerEntrypoint):
             log(f"grid {voltage:.1f}V, relay={relay!r}: switched plug {actual} -> {target}")
         else:
             log(f"grid {voltage:.1f}V: plug already {actual}" + (" (held off by admin)" if held else ""))
+        await self.track_boiler(target, plug_data, channel, switched=actual != target)
 
         if held:
             await self.state_put(DESIRED_KEY, HELD_ON)

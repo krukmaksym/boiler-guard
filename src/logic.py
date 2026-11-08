@@ -356,6 +356,85 @@ def plug_power(data, channel=0):
     return float(power)
 
 
+def plug_energy(data, channel=0):
+    """The plug's energy counter in Wh from a Shelly cloud /device/status response, or
+    None. Only differences matter (the heating time since a switch-on)."""
+    found = _channel_status(data, channel)
+    if found is None:
+        return None
+    switch, _, meter = found
+    total = _dict(switch.get("aenergy")).get("total")  # Gen2/Gen3: Wh
+    if total is None:
+        total = meter.get("total")  # Gen1: watt-minutes
+        if isinstance(total, (int, float)) and not isinstance(total, bool):
+            total = total / 60
+    if not isinstance(total, (int, float)) or isinstance(total, bool) or not math.isfinite(total):
+        return None
+    return float(total)
+
+
+def duration_text(seconds):
+    """ "45 хв" or "2 год 5 хв"; at least 1 хв."""
+    minutes = max(round(seconds / 60), 1)
+    hours, minutes = divmod(minutes, 60)
+    if not hours:
+        return f"{minutes} хв"
+    return f"{hours} год {minutes} хв" if minutes else f"{hours} год"
+
+
+BATTERY_IDLE_WATTS = 20  # battery power below this (either way) counts as neither charging nor discharging
+BATTERY_FULL_PERCENT = 100  # at 100% a trickle charge (or idle) reads as "fully charged"
+
+
+def battery_state(soc, watts):
+    """ "full", "charging", "discharging", "idle", or None when the power is unknown.
+    Deye's sign: negative while charging. A full battery's trickle isn't "charging"."""
+    if watts is None:
+        return None
+    if soc is not None and soc >= BATTERY_FULL_PERCENT and watts < BATTERY_IDLE_WATTS:
+        return "full"
+    if watts <= -BATTERY_IDLE_WATTS:
+        return "charging"
+    if watts >= BATTERY_IDLE_WATTS:
+        return "discharging"
+    return "idle"
+
+
+def grid_presence(voltage):
+    """ "present" (any voltage from GRID_LOST_BELOW up), "absent", or None (no reading)."""
+    condition = grid_condition(voltage)
+    if condition is None:
+        return None
+    return "absent" if condition == "lost" else "present"
+
+
+def track(timeline, updates, now):
+    """Apply observations to a timeline {name: {"state", "since", "exact", "wh"}} in
+    place; True when anything changed. updates: {name: {"state", "exact", "certain",
+    "wh"}}. A state seen for the first time gets exact False (it began at some unknown
+    time before) unless "certain" (the bot itself just switched it); a change from a
+    known state is exact when the caller says so (the cron sees grid and battery
+    changes within a minute; a boiler switched by hand is only noticed later). "wh":
+    the plug's energy counter when the boiler was seen switching on."""
+    changed = False
+    for name, update in updates.items():
+        state = update.get("state")
+        if state is None:
+            continue
+        stored = timeline.get(name)
+        if isinstance(stored, dict) and stored.get("state") == state:
+            continue
+        known = isinstance(stored, dict) and stored.get("state") is not None
+        timeline[name] = {
+            "state": state,
+            "since": now,
+            "exact": bool(update.get("certain") or (known and update.get("exact"))),
+            "wh": update.get("wh"),
+        }
+        changed = True
+    return changed
+
+
 def control_target(action, desired_now):
     """Plug state an admin's button press should produce, or None to leave it.
 

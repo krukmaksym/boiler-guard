@@ -184,7 +184,12 @@ inverter losses; compare it with the inverter's "Max A Discharge" setting),
 whether the battery is charging or discharging and at what power (`BATTERY_POWER_KEY`,
 default `BatteryPower`, negative while charging) and whether protection is active. When grid is present but its voltage is out of
 range, or the inverter has disconnected itself from the grid, it says so, and
-during the voltage cooldown it says roughly when the boiler will switch back on. `/start` or `/help` explain what it does.
+during the voltage cooldown it says roughly when the boiler will switch back on.
+It also says for how long things have been as they are: the grid present or absent,
+the battery charging or discharging, and the boiler switched on, with how long it has
+actually heated water since (the plug's energy counter divided by its heating power,
+`BOILER_WATTS` when it isn't heating right now). These times live in the `PlugState`
+Durable Object; a state that already held when tracking began reads "понад …". `/start` or `/help` explain what it does.
 
 The power line tells whether the boiler is actually heating: from 20 W up it reads
 "гріє воду", below it "вода нагріта" (the plug is on but the boiler's thermostat is
