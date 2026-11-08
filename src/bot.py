@@ -22,8 +22,8 @@ PANEL_TTL_LIVE_SECONDS = 60  # webhook: presses arrive within seconds
 POLL_DELAY_SECONDS = 60  # polling: how late a cron run may see a press
 ACTIONS = {"boiler:on": "on", "boiler:off": "off"}  # callback_data -> action
 HEATING_WATTS = 20  # above this the boiler's heater is on; below it the thermostat is idle
-BATTERY_IDLE_WATTS = 20  # battery power below this (either way) counts as neither charging nor discharging
-BATTERY_FULL_PERCENT = 100  # at 100% a trickle charge (or idle) reads as "fully charged"
+BATTERY_IDLE_WATTS = logic.BATTERY_IDLE_WATTS
+BATTERY_FULL_PERCENT = logic.BATTERY_FULL_PERCENT
 
 # Persistent keyboard under the input field (posted by scripts/telegram_menu.py).
 # A press posts the button's text as the user's own message. The bot needs group
@@ -246,19 +246,30 @@ def power_line(watts):
     return f"⚡️ Потужність: {watts:.0f} Вт (вода нагріта)"
 
 
-def battery_line(soc, watts):
-    """'🔋 Батарея 80%, заряджається: 1200 Вт'; either part may be unknown (None). A full
-    battery isn't "charging": the inverter only tops it up (Deye's app shows "Static")."""
+def for_text(duration):
+    """ " 3 год 10 хв" / " понад 3 год" for a (seconds, exact) duration, "" when unknown.
+    "понад" when the state already held before the bot started watching it."""
+    if not duration:
+        return ""
+    seconds, exact = duration
+    return f" {logic.duration_text(seconds)}" if exact else f" понад {logic.duration_text(seconds)}"
+
+
+def battery_line(soc, watts, duration=None):
+    """'🔋 Батарея 80%, заряджається 45 хв: 1200 Вт'; either part may be unknown (None).
+    A full battery isn't "charging": the inverter only tops it up (Deye's app shows
+    "Static"). duration: (seconds, exact) of charging or discharging, if known."""
     parts = [f"🔋 Батарея {soc:.0f}%" if soc is not None else "🔋 Батарея"]
-    if watts is not None:
-        if soc is not None and soc >= BATTERY_FULL_PERCENT and watts < BATTERY_IDLE_WATTS:
-            parts.append("повністю заряджена")
-        elif watts <= -BATTERY_IDLE_WATTS:
-            parts.append(f"заряджається: {-watts:.0f} Вт")
-        elif watts >= BATTERY_IDLE_WATTS:
-            parts.append(f"розряджається: {watts:.0f} Вт")
-        else:
-            parts.append("не заряджається і не розряджається")
+    state = logic.battery_state(soc, watts)
+    since = for_text(duration)
+    if state == "full":
+        parts.append("повністю заряджена")
+    elif state == "charging":
+        parts.append(f"заряджається{since}: {-watts:.0f} Вт")
+    elif state == "discharging":
+        parts.append(f"розряджається{since}: {watts:.0f} Вт")
+    elif state == "idle":
+        parts.append("не заряджається і не розряджається")
     return ", ".join(parts) if soc is not None else " ".join(parts)
 
 
@@ -278,6 +289,7 @@ def status_message(
     on_at=210.0,
     high_on=255.0,
     cooldown_minutes=0,
+    durations=None,
 ):
     """wait_seconds: how long the voltage must still stay in range before the boiler
     switches back on after a switch-off (None: not waiting; 0: the wait is over). battery:
@@ -285,27 +297,39 @@ def status_message(
     grid relay status text from Deye ("Pull-in" while connected), or None. load_amps:
     battery current the backup load would need on battery alone, shown with the load.
     on_at, high_on, cooldown_minutes: when an off boiler switches back on, named while
-    the voltage (grid present, inverter on grid) is outside that window."""
+    the voltage (grid present, inverter on grid) is outside that window. durations: how
+    long things have been as they are, {"grid"|"battery"|"boiler": (seconds, exact),
+    "heated": seconds the boiler has heated since it was switched on}."""
+    durations = durations or {}
+    grid_for = for_text(durations.get("grid"))
     lines = ["📊 Поточний стан"]
     condition = logic.grid_condition(voltage, off_below, high_off)
     if condition is None:
         lines.append("❔ Немає свіжих даних від інвертора Deye")
     elif condition == "lost":
-        lines.append(f"⚡️ Світла немає (мережа {voltage:.0f} В)")
+        lines.append(f"⚡️ Світла немає{grid_for} (мережа {voltage:.0f} В)")
     elif condition == "low":
         # No threshold here: the boiler switches *off* below OFF_VOLTAGE, but back on
         # only at ON_VOLTAGE, which the ⏳ line below names; showing both read as a
         # contradiction ("поріг 205 В" next to "підніметься до 220 В").
-        lines.append(f"📉 Світло є, але напруга занизька для бойлера: {voltage:.0f} В")
+        lines.append(f"📉 Світло є{grid_for}, але напруга занизька для бойлера: {voltage:.0f} В")
     elif condition == "high":
-        lines.append(f"📈 Світло є, але напруга зависока для бойлера: {voltage:.0f} В")
+        lines.append(f"📈 Світло є{grid_for}, але напруга зависока для бойлера: {voltage:.0f} В")
     else:
-        lines.append(f"💡 Світло є (мережа {voltage:.0f} В)")
+        lines.append(f"💡 Світло є{grid_for} (мережа {voltage:.0f} В)")
     disconnected = logic.relay_open(relay)
     if condition not in (None, "lost") and (disconnected or (disconnected is None and condition == "high")):
         lines.append("⚠️ Інвертор відключився від мережі й живить дім від батареї")
     if plug == "on":
-        lines.append("🔥 Бойлер увімкнений")
+        line = f"🔥 Бойлер увімкнений{for_text(durations.get('boiler'))}"
+        heated = durations.get("heated")
+        if heated is not None:
+            line += (
+                f", з них нагрівав воду {logic.duration_text(heated)}"
+                if heated >= 30
+                else ", воду ще не нагрівав"
+            )
+        lines.append(line)
         if power is not None:
             lines.append(power_line(power))
     elif plug == "off":
@@ -327,7 +351,7 @@ def status_message(
         if until:
             lines.append(f"⏳ Бойлер увімкнеться сам, {until}")
     if soc is not None or battery is not None:
-        lines.append(battery_line(soc, battery))
+        lines.append(battery_line(soc, battery, durations.get("battery")))
     if load is not None:
         line = f"🏠 Навантаження на резервний вихід інвертора: {load:.0f} Вт"
         if load_amps is not None:

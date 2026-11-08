@@ -119,6 +119,45 @@ class OddDeyeResponseTest(unittest.TestCase):
             self.assertEqual(logic.reading_problem(deye(value), SN, NOW)[0], "no_value")
 
 
+class TimelineTest(unittest.TestCase):
+    def test_plug_energy(self):
+        gen2 = {
+            "isok": True,
+            "data": {"online": True, "device_status": {"switch:0": {"aenergy": {"total": 12.5}}}},
+        }
+        self.assertEqual(logic.plug_energy(gen2), 12.5)
+        gen1 = {"isok": True, "data": {"online": True, "device_status": {"meters": [{"total": 600}]}}}
+        self.assertEqual(logic.plug_energy(gen1), 10.0)  # watt-minutes
+        self.assertIsNone(logic.plug_energy(shelly()))
+        self.assertIsNone(logic.plug_energy(None))
+
+    def test_battery_state(self):
+        self.assertEqual(logic.battery_state(100.0, -47.0), "full")
+        self.assertEqual(logic.battery_state(99.0, -47.0), "charging")
+        self.assertEqual(logic.battery_state(50.0, 640.0), "discharging")
+        self.assertEqual(logic.battery_state(50.0, 5.0), "idle")
+        self.assertIsNone(logic.battery_state(50.0, None))
+
+    def test_grid_presence(self):
+        self.assertEqual(logic.grid_presence(0.0), "absent")
+        self.assertEqual(logic.grid_presence(190.0), "present")
+        self.assertIsNone(logic.grid_presence(None))
+
+    def test_track(self):
+        timeline = {}
+        self.assertTrue(logic.track(timeline, {"grid": {"state": "present", "exact": True}}, 100.0))
+        self.assertEqual(timeline["grid"], {"state": "present", "since": 100.0, "exact": False, "wh": None})
+        self.assertFalse(logic.track(timeline, {"grid": {"state": "present", "exact": True}}, 200.0))
+        self.assertTrue(logic.track(timeline, {"grid": {"state": "absent", "exact": True}}, 300.0))
+        self.assertEqual(timeline["grid"]["since"], 300.0)
+        self.assertTrue(timeline["grid"]["exact"])  # a change from a known state
+        logic.track(timeline, {"boiler": {"state": "on", "certain": True, "wh": 5.0}}, 400.0)
+        self.assertEqual(timeline["boiler"], {"state": "on", "since": 400.0, "exact": True, "wh": 5.0})
+        self.assertFalse(logic.track(timeline, {"battery": {"state": None}}, 500.0))  # unknown: skipped
+        logic.track(timeline, {"boiler": {"state": "off"}}, 600.0)
+        self.assertFalse(timeline["boiler"]["exact"])  # switched by hand: noticed later
+
+
 class HysteresisTest(unittest.TestCase):
     def test_thresholds(self):
         self.assertEqual(logic.desired_state(210.0, None), logic.ON)

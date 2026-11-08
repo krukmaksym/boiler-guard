@@ -284,6 +284,31 @@ class StatusMessageTest(unittest.TestCase):
         ):
             self.assertNotIn("Бойлер увімкнеться сам", quiet)
 
+    def test_durations(self):
+        def text(**kwargs):
+            return bot.status_message(216.0, "on", 77.0, battery=-1031.0, power=1433.0, **kwargs)
+
+        full = text(
+            durations={
+                "grid": (190 * 60, True),
+                "battery": (45 * 60, True),
+                "boiler": (190 * 60, True),
+                "heated": 85 * 60,
+            }
+        )
+        self.assertIn("💡 Світло є 3 год 10 хв (мережа 216 В)", full)
+        self.assertIn("🔥 Бойлер увімкнений 3 год 10 хв, з них нагрівав воду 1 год 25 хв", full)
+        self.assertIn("🔋 Батарея 77%, заряджається 45 хв: 1031 Вт", full)
+        unsure = text(durations={"grid": (3600, False), "boiler": (600, True), "heated": 10})
+        self.assertIn("💡 Світло є понад 1 год (мережа 216 В)", unsure)
+        self.assertIn("🔥 Бойлер увімкнений 10 хв, воду ще не нагрівав", unsure)
+        plain = text()
+        self.assertIn("💡 Світло є (мережа 216 В)", plain)
+        self.assertIn("🔥 Бойлер увімкнений\n", plain)
+        self.assertIn("заряджається: 1031 Вт", plain)
+        low = bot.status_message(191.0, "off", 41.0, durations={"grid": (7200, True)})
+        self.assertIn("📉 Світло є 2 год, але напруга занизька для бойлера: 191 В", low)
+
     def test_cooldown_line(self):
         text = bot.status_message(230.0, "off", 80.0, wait_seconds=290)
         self.assertIn("бойлер увімкнеться за ~5 хв", text)
