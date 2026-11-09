@@ -54,7 +54,8 @@ expires or is rejected.
   refuses settings changes for these credentials (`auth no operation permission`).
 - **Deye is read-only in code too**: every Deye call goes through `logic.deye_url`,
   which allows only `/v1.0/account/token` and `/v1.0/device/latest` on
-  `https://*.deyecloud.com`. All 18 endpoints in Deye's API that change settings,
+  `https://*.deyecloud.com` (or `http://localhost` / `127.0.0.1` for the local mock,
+  which a deployed Worker can't reach). All 18 endpoints in Deye's API that change settings,
   stations or accounts (`/order/*`, `/strategy/*`, logger and station management)
   are refused before any request is made, with a test for each.
 - Credentials are **Worker Secrets** (encrypted, write-only, scoped to this Worker).
@@ -78,7 +79,11 @@ expires or is rejected.
 - A failed Deye login backs off for 15 minutes (no account lockout from retry loops).
 - Secrets are never logged. `.prod.vars`, `.dev.vars` and `.wrangler/` are git-ignored,
   and a pre-commit hook refuses commits containing secret files or real secret values.
-- wrangler is pinned in `package-lock.json`; scripts use `npx --no-install`.
+- wrangler is pinned in `package-lock.json` and installed only by `npm ci`; scripts
+  call it with `npx --no-install`. `pywrangler` calls `npx --yes wrangler`, which would
+  download the latest wrangler if none is installed, so `scripts/deploy.sh` and
+  `scripts/test-env.sh` refuse to run until `npm ci` has installed the pinned one
+  (`scripts/check-wrangler.sh`). Run `npm ci` before any `pywrangler` command.
 
 ## Setup
 
@@ -87,7 +92,7 @@ app, and a Shelly plug on Shelly Cloud.
 
 ```bash
 npm ci                                                  # pinned wrangler
-python3 -m venv .venv && .venv/bin/pip install "pip>=25.1" && .venv/bin/pip install --group dev
+python3 -m venv .venv && .venv/bin/pip install "pip==26.2.1" && .venv/bin/pip install --group dev
 git config core.hooksPath scripts/hooks                 # secret-blocking pre-commit hook
 cp .prod.vars.example .prod.vars                        # then fill it in
 ```
@@ -131,6 +136,9 @@ One-time setup, in a GitHub environment named `production`:
 - Secret `CLOUDFLARE_API_TOKEN`: a Cloudflare API token scoped to your account with
   **Workers Scripts: Edit**.
 - Variable `CLOUDFLARE_ACCOUNT_ID`: your Cloudflare account ID.
+- **Deployment branches and tags → Selected branches → `main` only.** Without this
+  rule, a workflow pushed on any other branch can name the `production` environment
+  and read the token.
 
 Steps that download or deploy (pip, npm, `pywrangler`) run through `scripts/retry.sh`,
 which retries a failed command 3 times (15 s, 30 s, 60 s apart), so a short outage
@@ -286,7 +294,8 @@ the same plain 404 (`src/webhook.py`):
 - the path, `/telegram/<hash of the secret>`, which nobody can guess without it;
 - `POST` with a JSON body of at most 64 KB;
 - the client IP is in Telegram's webhook ranges (`149.154.160.0/20`, `91.108.4.0/22`).
-  Setting the var `TELEGRAM_IP_CHECK` to `off` skips only this check.
+  Setting the var `TELEGRAM_IP_CHECK` to `off` skips only this check; keep it on
+  unless Telegram changes its ranges.
 
 After that, the same chat and admin checks as in polling mode apply. Status and
 the panel are each answered at most once per 10 s (they read Deye and Shelly), Telegram delivers one update at a time

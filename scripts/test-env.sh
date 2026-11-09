@@ -40,6 +40,7 @@ case "${1:-}" in
       echo "hours must be 1-12" >&2
       exit 1
     fi
+    scripts/check-wrangler.sh
     python3 -m unittest discover -s tests -q
     EXPIRES_AT=$(( $(date +%s) + HOURS * 3600 ))
 
