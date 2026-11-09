@@ -132,6 +132,10 @@ One-time setup, in a GitHub environment named `production`:
   **Workers Scripts: Edit**.
 - Variable `CLOUDFLARE_ACCOUNT_ID`: your Cloudflare account ID.
 
+Steps that download or deploy (pip, npm, `pywrangler`) run through `scripts/retry.sh`,
+which retries a failed command 3 times (15 s, 30 s, 60 s apart), so a short outage
+upstream doesn't fail the run. Lint, tests and the secret scan are offline and aren't retried.
+
 Actions are pinned to commit SHAs; Dependabot proposes updates as PRs.
 
 ### Telegram notifications (optional)
