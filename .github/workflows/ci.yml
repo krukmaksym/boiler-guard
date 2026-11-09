@@ -14,6 +14,10 @@ concurrency:
   # Supersede stale PR runs, but never cancel a run on main mid-deploy.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Steps that download or deploy run through scripts/retry.sh (3 retries), so a
+# short outage upstream (GitHub, PyPI, npm, Cloudflare) doesn't fail the run.
+# Lint, tests and the secret scan are offline and deterministic: not retried.
+
 env:
   PIP_VERSION: "26.2.1" # needed for `pip install --group`
   NODE_VERSION: "24"
@@ -34,8 +38,8 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install pinned dev tools
         run: |
-          python -m pip install "pip==${PIP_VERSION}"
-          python -m pip install --group dev
+          scripts/retry.sh python -m pip install "pip==${PIP_VERSION}"
+          scripts/retry.sh python -m pip install --group dev
       - name: ruff lint
         run: ruff check . scripts/hooks/pre-commit
       - name: ruff format
@@ -95,13 +99,13 @@ jobs:
           cache: npm
       - name: Install pinned tools
         run: |
-          npm ci
-          python -m pip install "pip==${PIP_VERSION}"
-          python -m pip install --group dev
+          scripts/retry.sh npm ci
+          scripts/retry.sh python -m pip install "pip==${PIP_VERSION}"
+          scripts/retry.sh python -m pip install --group dev
       - name: npm audit
-        run: npm audit --audit-level=high
+        run: scripts/retry.sh npm audit --audit-level=high
       - name: Bundle without deploying
-        run: pywrangler deploy --env="" --dry-run --outdir dist
+        run: scripts/retry.sh pywrangler deploy --env="" --dry-run --outdir dist
 
   deploy:
     name: Deploy to Cloudflare
@@ -129,13 +133,13 @@ jobs:
           cache: npm
       - name: Install pinned tools
         run: |
-          npm ci
-          python -m pip install "pip==${PIP_VERSION}"
-          python -m pip install --group dev
+          scripts/retry.sh npm ci
+          scripts/retry.sh python -m pip install "pip==${PIP_VERSION}"
+          scripts/retry.sh python -m pip install --group dev
       # Code and [vars] only. Worker Secrets stay in Cloudflare and are untouched
       # by deploys, so GitHub never holds Deye or Shelly credentials.
       - name: Deploy
-        run: pywrangler deploy --env=""  # production (top-level), never boiler-guard-test
+        run: scripts/retry.sh pywrangler deploy --env=""  # production (top-level), never boiler-guard-test
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 ENV_FILE="${1:-.prod.vars}"
 [[ -f "$ENV_FILE" ]] || { echo "No such file: $ENV_FILE" >&2; exit 1; }
 
+scripts/check-wrangler.sh
 python3 -m unittest discover -s tests -q
 
 umask 077
