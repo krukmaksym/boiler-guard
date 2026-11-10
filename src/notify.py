@@ -1,7 +1,8 @@
 """Notification decisions and Ukrainian message texts. Pure: no I/O, unit-testable.
 
 All dedup state lives in one small dict (stored as JSON in KV under one key), so a
-run costs one KV read and writes only when something changes.
+run costs one KV read and writes only when something changes. Alerts Telegram didn't
+take wait in the same dict and are retried.
 """
 
 import re
@@ -159,14 +160,47 @@ BLIND_REASONS = {
 }
 
 
-def blind_message(reason=None):
+def blind_message(reason=None, off_in_minutes=None):
+    """off_in_minutes: when the fail-safe switch-off (BLIND_OFF_SECONDS) follows, if it does."""
     cause = BLIND_REASONS.get(reason)
-    return (
+    text = (
         "⚠️ Вже 5 хвилин немає даних від інвертора Deye"  # BLIND_AFTER_SECONDS, fixed in code
         + (f": {cause}" if cause else "")
         + ". Автоматичне вимкнення бойлера тимчасово не працює. "
         "Якщо зникне світло — вимкніть бойлер вручну."
     )
+    if off_in_minutes:
+        text += (
+            f" Якщо даних не буде ще {off_in_minutes} хв, увімкнений бойлер буде вимкнено про всяк випадок."
+        )
+    return text
+
+
+def _when_data_is_back(cooldown_minutes):
+    wait = f" {cooldown_minutes} хв" if cooldown_minutes else ""
+    return f"коли дані повернуться і напруга буде в нормі{wait}"
+
+
+def blind_off_message(blind_for, switched, cooldown_minutes=0):
+    """The fail-safe switch-off after BLIND_OFF_SECONDS without data."""
+    head = f"⚠️ Даних від інвертора Deye немає вже {duration_text(blind_for)}"
+    until = _when_data_is_back(cooldown_minutes)
+    if not switched:
+        return f"{head}. Бойлер уже був вимкнений; він увімкнеться, {until}."
+    return (
+        f"{head}, тож бойлер вимкнено про всяк випадок: без даних не видно, чи є світло. "
+        f"Він увімкнеться, {until}."
+    )
+
+
+def on_blind_off(state, now, blind_for, switched, cooldown_minutes=0):
+    """The boiler was switched off (or found off) because Deye stayed silent. Remembered
+    as "blind_off", so what follows isn't told as a grid outage that may never have been."""
+    state["off_since"] = now
+    for flag in ("low_voltage", "high_voltage", "relay_voltage", "back_notified", "present_notified"):
+        state.pop(flag, None)
+    state["blind_off"] = True
+    return blind_off_message(blind_for, switched, cooldown_minutes)
 
 
 def blind_recovered_message(voltage, lasted):
@@ -207,14 +241,17 @@ WEBHOOK_PROBLEM_MESSAGES = {
 # Each takes the state dict and returns a message (or None), updating state in place.
 
 
-def on_voltage(state, voltage, now, reason=None):
+def on_voltage(state, voltage, now, reason=None, blind_off_seconds=0):
     """Track how long Deye has been unavailable (voltage None). reason: why, as a
-    BLIND_REASONS code, named in the alert; the recovery message says how long it lasted."""
+    BLIND_REASONS code, named in the alert; the recovery message says how long it lasted.
+    blind_off_seconds: after this long without data the boiler is switched off (0:
+    never); the alert says how soon that is."""
     if voltage is None:
         since = state.setdefault("blind_since", now)
         if not state.get("blind_notified") and now - since >= BLIND_AFTER_SECONDS:
             state["blind_notified"] = True
-            return blind_message(reason)
+            left = blind_off_seconds - (now - since) if blind_off_seconds else 0
+            return blind_message(reason, max(round(left / 60), 1) if left > 0 else None)
         return None
     notified = state.pop("blind_notified", False)
     since = state.pop("blind_since", now)
@@ -274,7 +311,14 @@ def on_switched(
         condition = logic.grid_condition(voltage, off_below, high_off)
         if disconnected and condition != "lost":
             condition = "relay"
-        for flag in ("low_voltage", "high_voltage", "relay_voltage", "back_notified", "present_notified"):
+        for flag in (
+            "low_voltage",
+            "high_voltage",
+            "relay_voltage",
+            "back_notified",
+            "present_notified",
+            "blind_off",
+        ):
             state.pop(flag, None)
         if condition in ("low", "high", "relay"):
             state[f"{condition}_voltage"] = True
@@ -294,14 +338,17 @@ def on_switched(
     relay = state.pop("relay_voltage", False)
     since = state.pop("off_since", None)
     announced = state.pop("back_notified", False)
+    blind = state.pop("blind_off", False)
     state.pop("present_notified", None)
     if previous is None:
         return None
-    if announced:  # on_back already said the grid is back and for how long
-        return switched_on_after_wait_message(switched, held, now - back_since if back_since else None)
+    waited = now - back_since if now is not None and back_since is not None else None
+    if announced or blind:
+        # on_back already said the grid is back and for how long; after a fail-safe
+        # switch-off (no data) there was no outage to speak of.
+        return switched_on_after_wait_message(switched, held, waited)
     back = back_since if back_since is not None else now
     lasted = back - since if back is not None and since is not None else None
-    waited = now - back_since if now is not None and back_since is not None else None
     if relay:
         return reconnected_message(voltage, switched, held, lasted, waited)
     if low or high:
@@ -323,6 +370,14 @@ def back_message(voltage, lasted, cooldown_minutes, cause, held=False):
     """The grid (or the voltage, or the inverter's connection) is back; the boiler
     switches on only after the cooldown. cause: "low"/"high"/"relay" or None (outage)."""
     gap = duration_text(lasted) if lasted is not None else None
+    if cause == "blind":
+        head = f"🔌 Дані від інвертора є, напруга в нормі ({voltage:.1f} В)."
+        if held:
+            return f"{head} Бойлер лишається вимкненим: його вимкнули вручну."
+        return (
+            f"{head} Бойлер, вимкнений через відсутність даних, увімкнеться за "
+            f"{cooldown_minutes} хв, якщо напруга буде стабільною."
+        )
     if cause == "relay":
         head = f"✅ Інвертор знову підключився до мережі ({voltage:.1f} В)."
         gap = f" Відключення тривало {gap}." if gap else ""
@@ -350,6 +405,8 @@ def on_back(state, voltage, now, cooldown_minutes, held=False):
     since = state.get("off_since")
     lasted = now - since if since is not None else None
     cause = next((c for c in ("relay", "low", "high") if state.get(f"{c}_voltage")), None)
+    if state.get("blind_off"):
+        cause = "blind"
     return back_message(voltage, lasted, cooldown_minutes, cause, held)
 
 
@@ -366,15 +423,19 @@ def on_back_but_low(state, voltage, now, on_at=210.0, high_on=255.0, cooldown_mi
     high = voltage > high_on
     since = state.get("off_since")
     lasted = now - since if since is not None else None
+    came = "Світло повернулося"
+    if state.pop("blind_off", False):
+        # Off for lack of data, not an outage: nothing "returned", no "Світла не було".
+        came, lasted = "Світло є", None
     state["off_since"] = now
     state["high_voltage" if high else "low_voltage"] = True
     state["present_notified"] = True
     wait = _cooldown_tail(cooldown_minutes)
     if high:
-        head = f"💡 Світло повернулося (мережа {_v(voltage)}), але напруга зависока для бойлера."
+        head = f"💡 {came} (мережа {_v(voltage)}), але напруга зависока для бойлера."
         until = f"коли напруга опуститься до {high_on:.0f} В{wait}"
     else:
-        head = f"💡 Світло повернулося (мережа {_v(voltage)}), але напруга низька для бойлера."
+        head = f"💡 {came} (мережа {_v(voltage)}), але напруга низька для бойлера."
         until = f"коли напруга підніметься до {on_at:.0f} В{wait}"
     gap = f" Світла не було {duration_text(lasted)}." if lasted is not None else ""
     return f"{head}{gap} Бойлер увімкнеться, {until}."
@@ -400,6 +461,42 @@ def on_lost_again(state, voltage, now, cause=None, cooldown_minutes=0):
             f"підключиться до мережі{_cooldown_tail(cooldown_minutes)}."
         )
     return f"⚡️ Світло знову зникло (мережа {_v(voltage)}). Бойлер лишається вимкненим."
+
+
+# --- alerts Telegram didn't take ----------------------------------------------
+# Kept in the state under "unsent" as [{"text", "at"}] and retried by the next runs.
+
+UNSENT_MAX = 20  # the newest are kept; a longer backlog is noise by the time it arrives
+UNSENT_MAX_AGE_SECONDS = 24 * 3600
+LATE_AFTER_SECONDS = 120  # from here a retried alert says how late it is
+
+
+def take_unsent(state, now):
+    """Remove and return the alerts earlier runs couldn't send, oldest first; ones
+    older than UNSENT_MAX_AGE_SECONDS (and anything malformed) are dropped."""
+    items = state.pop("unsent", None)
+    kept = []
+    for item in items if isinstance(items, list) else []:
+        text, at = (item.get("text"), item.get("at")) if isinstance(item, dict) else (None, None)
+        if not isinstance(text, str) or not text or isinstance(at, bool) or not isinstance(at, (int, float)):
+            continue
+        if now - at <= UNSENT_MAX_AGE_SECONDS:
+            kept.append({"text": text, "at": at})
+    return kept
+
+
+def keep_unsent(state, items):
+    """Remember alerts that couldn't be sent, for the next run."""
+    state["unsent"] = list(items)[-UNSENT_MAX:]
+
+
+def late_text(item, now):
+    """The alert's text; one that waited says so, since "Зникло світло" arriving an
+    hour late would otherwise read as news."""
+    delay = now - item["at"]
+    if delay < LATE_AFTER_SECONDS:
+        return item["text"]
+    return f"🕓 Повідомлення затрималося на {duration_text(delay)}:\n{item['text']}"
 
 
 def on_error(state, signature, detail, now):

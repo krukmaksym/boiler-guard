@@ -182,6 +182,31 @@ class SwitchTest(unittest.TestCase):
         self.assertIsNotNone(notify.on_switch_failed(state, "off"))
 
 
+class UnsentTest(unittest.TestCase):
+    def test_kept_alerts_come_back_oldest_first_and_leave_the_state(self):
+        state = {}
+        notify.keep_unsent(state, [{"text": "a", "at": T0}, {"text": "b", "at": T0 + 60}])
+        self.assertEqual([m["text"] for m in notify.take_unsent(state, T0 + 120)], ["a", "b"])
+        self.assertEqual(state, {})
+
+    def test_old_and_malformed_ones_are_dropped(self):
+        day = notify.UNSENT_MAX_AGE_SECONDS
+        items = [{"text": "old", "at": T0 - day - 1}, {"text": "ok", "at": T0}, "junk", {"at": T0}]
+        state = {"unsent": items}
+        self.assertEqual(notify.take_unsent(state, T0), [{"text": "ok", "at": T0}])
+        self.assertEqual(notify.take_unsent({"unsent": "junk"}, T0), [])
+
+    def test_only_the_newest_are_kept(self):
+        state = {}
+        notify.keep_unsent(state, [{"text": str(n), "at": T0} for n in range(notify.UNSENT_MAX + 5)])
+        self.assertEqual(len(state["unsent"]), notify.UNSENT_MAX)
+        self.assertEqual(state["unsent"][-1]["text"], str(notify.UNSENT_MAX + 4))
+
+    def test_a_prompt_alert_is_sent_as_is(self):
+        self.assertEqual(notify.late_text({"text": "x", "at": T0}, T0 + 60), "x")
+        self.assertIn("затрималося на 2 год", notify.late_text({"text": "x", "at": T0}, T0 + 7200))
+
+
 class ErrorTest(unittest.TestCase):
     def test_dedup_hourly_and_recovery(self):
         state = {}

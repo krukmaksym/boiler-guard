@@ -42,6 +42,7 @@ BATTERY_VOLTAGE_KEY = "BatteryVoltage"
 # live reading is used). 1656 W was measured at 229 V.
 BOILER_WATTS = "1670"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
+# The four voltage thresholds are required: the code has no fallback for them.
 # The gap between ON_VOLTAGE and OFF_VOLTAGE must exceed the drop the boiler's own
 # load causes on this weak grid (11-13 V measured on 2026-11-05/06), or switching on
 # pulls the voltage under OFF_VOLTAGE within minutes and the boiler cycles: 15 V here.
@@ -58,6 +59,10 @@ HIGH_OFF_VOLTAGE = "265"
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
+# After this long without a trustworthy Deye reading the boiler is switched off, in case
+# the grid went together with the data; it comes back once a reading is in range again
+# and the cooldown has passed (0 = never switch off for lack of data).
+BLIND_OFF_SECONDS = "900"
 SHELLY_CHANNEL = "0"
 
 [observability]
@@ -110,6 +115,7 @@ BATTERY_VOLTAGE_KEY = "BatteryVoltage"
 # live reading is used). 1656 W was measured at 229 V.
 BOILER_WATTS = "1670"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
+# The four voltage thresholds are required: the code has no fallback for them.
 # The gap between ON_VOLTAGE and OFF_VOLTAGE must exceed the drop the boiler's own
 # load causes on this weak grid (11-13 V measured on 2026-11-05/06), or switching on
 # pulls the voltage under OFF_VOLTAGE within minutes and the boiler cycles: 15 V here.
@@ -126,6 +132,10 @@ HIGH_OFF_VOLTAGE = "265"
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
+# After this long without a trustworthy Deye reading the boiler is switched off, in case
+# the grid went together with the data; it comes back once a reading is in range again
+# and the cooldown has passed (0 = never switch off for lack of data).
+BLIND_OFF_SECONDS = "900"
 SHELLY_CHANNEL = "0"
 
 [env.test.observability]

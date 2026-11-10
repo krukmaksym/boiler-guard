@@ -53,6 +53,8 @@ class GridVoltageTest(unittest.TestCase):
         self.assertIsNone(logic.grid_voltage(deye(state=2), SN, NOW))
         self.assertIsNone(logic.grid_voltage(deye(collected=NOW - 3600), SN, NOW))
         self.assertIsNone(logic.grid_voltage(deye(collected=None), SN, NOW))
+        self.assertIsNone(logic.grid_voltage(deye(collected=NOW + 3600), SN, NOW))  # never "fresh" for good
+        self.assertEqual(logic.grid_voltage(deye(collected=NOW + 30), SN, NOW), 223.2)  # clock skew is fine
         self.assertIsNone(logic.grid_voltage(deye(voltage="n/a"), SN, NOW))
 
     def test_missing_grid_key_is_none_not_load_voltage(self):
@@ -234,6 +236,48 @@ class CooldownTest(unittest.TestCase):
         self.assertEqual(logic.parse_time("1800000000.5"), 1800000000.5)
         for bad in (None, "", "garbage", "nan", "inf"):
             self.assertIsNone(logic.parse_time(bad))
+
+
+class PlanTest(unittest.TestCase):
+    """The run's decision for every saved state, without any I/O."""
+
+    def test_nothing_to_do_while_the_reading_agrees_with_what_is_saved(self):
+        for saved, desired in (
+            (logic.ON, logic.ON),
+            (logic.COOLDOWN_OFF, logic.OFF),
+            (logic.OFF, logic.OFF),
+            (logic.ON, None),
+            (None, None),
+        ):
+            self.assertEqual(logic.plan(saved, desired, held=False), logic.Step(logic.KEEP), (saved, desired))
+
+    def test_a_switch_off_is_applied_whatever_the_hold(self):
+        for saved in (logic.ON, logic.HELD_ON, None):
+            for held in (False, True):
+                step = logic.plan(saved, logic.OFF, held)
+                self.assertEqual(step, logic.Step(logic.APPLY, logic.OFF), (saved, held))
+
+    def test_back_in_range_waits_out_the_cooldown_then_switches_on(self):
+        self.assertEqual(logic.plan(logic.COOLDOWN_OFF, logic.ON, False, wait_left=600.0).action, logic.WAIT)
+        self.assertEqual(logic.plan(logic.COOLDOWN_OFF, logic.ON, True, wait_left=1.0).action, logic.WAIT)
+        self.assertEqual(logic.plan(logic.COOLDOWN_OFF, logic.ON, False), logic.Step(logic.APPLY, logic.ON))
+
+    def test_the_hold_wins_over_the_grid_returning(self):
+        held = logic.Step(logic.APPLY, logic.OFF, held=True)
+        for saved in (logic.COOLDOWN_OFF, logic.OFF, None):
+            self.assertEqual(logic.plan(saved, logic.ON, held=True), held, saved)
+
+    def test_a_held_boiler_stays_as_it_is_until_the_hold_ends(self):
+        self.assertEqual(logic.plan(logic.HELD_ON, logic.ON, held=True), logic.Step(logic.KEEP))
+        resumed = logic.Step(logic.APPLY, logic.ON, resume=True)
+        self.assertEqual(logic.plan(logic.HELD_ON, logic.ON, held=False), resumed)
+
+    def test_the_first_run_applies_what_the_grid_says(self):
+        self.assertEqual(logic.plan(None, logic.ON, held=False), logic.Step(logic.APPLY, logic.ON))
+
+    def test_a_legacy_off_switches_on_without_a_wait(self):
+        step = logic.plan(logic.OFF, logic.ON, held=False, wait_left=0.0)
+        self.assertEqual(step, logic.Step(logic.APPLY, logic.ON))
 
 
 class PlugPowerTest(unittest.TestCase):

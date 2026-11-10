@@ -47,6 +47,8 @@ import logic  # noqa: E402
 
 SECRETS = {name: f"test-{name.lower()}" for name in entry.REQUIRED_SECRETS}
 SECRETS["SHELLY_HOST"] = "shelly-1-eu.shelly.cloud"
+# The voltage thresholds have no fallback in code, so every test Worker sets them.
+VOLTS = {"OFF_VOLTAGE": "205", "ON_VOLTAGE": "210", "HIGH_ON_VOLTAGE": "255", "HIGH_OFF_VOLTAGE": "265"}
 
 
 class FakeKV:
@@ -108,10 +110,11 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
         sleep = mock.patch.object(entry.asyncio, "sleep", mock.AsyncMock())
         sleep.start()
         self.addCleanup(sleep.stop)
+        entry.MEMO.clear()
 
     def worker(self, state=None, prod_state=None, plug=logic.OFF, voltage=230.0):
         kv_data, plug_data = split_state(state)
-        env = types.SimpleNamespace(STATE=FakeKV(kv_data), SHELLY_CHANNEL="0", **SECRETS)
+        env = types.SimpleNamespace(STATE=FakeKV(kv_data), SHELLY_CHANNEL="0", **SECRETS, **VOLTS)
         env.PLUG = FakeNamespace(plug_data, kv=env.STATE)
         if prod_state is not None:
             env.PROD_PLUG = FakeNamespace(prod_state)
@@ -846,6 +849,24 @@ class ConfigCheckTest(EntryTestCase):
             with self.assertRaises(entry.ConfigError):
                 await worker.check({}, [], {})
 
+    async def test_a_bad_number_names_its_variable(self):
+        for name in ("OFF_VOLTAGE", "SHELLY_CHANNEL", "BLIND_OFF_SECONDS", "MAX_DATA_AGE_SECONDS"):
+            worker = self.worker()
+            setattr(worker.env, name, "abc")
+            worker.deye_latest = mock.AsyncMock(return_value={})
+            del worker.deye_reading  # the real one, which reads MAX_DATA_AGE_SECONDS
+            with self.assertRaisesRegex(entry.ConfigError, name):
+                await worker.check({}, [], {})
+
+    async def test_a_missing_threshold_is_a_config_error_not_a_silent_default(self):
+        for name in VOLTS:
+            worker = self.worker(plug=logic.ON, voltage=0.0)
+            delattr(worker.env, name)
+            with self.assertRaisesRegex(entry.ConfigError, f"missing the {name} variable"):
+                await worker.check({}, [], {})
+            self.assertEqual(self.switched, [])
+            self.assertEqual(worker.reply_limits(), {})  # replies still work, without numbers
+
     async def test_negative_cooldown_is_a_config_error(self):
         worker = self.worker()
         worker.env.VOLTAGE_COOLDOWN_SECONDS = "-5"
@@ -868,6 +889,126 @@ class ConfigCheckTest(EntryTestCase):
         self.assertIsNone(await worker.answer_commands({}))
         self.assertNotIn("offset", worker.telegram.await_args.args[1])
         self.assertEqual(worker.env.STATE.data[entry.OFFSET_KEY], "10")
+
+
+class BlindFailSafeTest(EntryTestCase):
+    """No trustworthy Deye reading for BLIND_OFF_SECONDS: the boiler is switched off."""
+
+    BLIND = logic.Reading(problem=("stale", "last upload 20 min ago"))
+
+    def blind_worker(self, state=None, plug=logic.ON):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON} if state is None else state, plug=plug)
+        worker.deye_reading = mock.AsyncMock(return_value=self.BLIND)
+        return worker
+
+    async def run_at(self, worker, state, at):
+        outbox = []
+        with mock.patch.object(entry.time, "time", return_value=at):
+            await worker.check(state, outbox, {})
+        return [m for m in outbox if m]
+
+    async def test_switches_off_once_after_the_limit(self):
+        worker, state = self.blind_worker(), {}
+        self.assertEqual(await self.run_at(worker, state, 1000), [])
+        alert = await self.run_at(worker, state, 1000 + 5 * 60)
+        self.assertIn("ще 10 хв", alert[0])  # the blind alert says the switch-off follows
+        self.assertEqual(await self.run_at(worker, state, 1000 + 14 * 60), [])
+        self.assertEqual(self.switched, [])
+        told = await self.run_at(worker, state, 1000 + 15 * 60)
+        self.assertEqual(self.switched, [logic.OFF])
+        self.assertIn("немає вже 15 хв, тож бойлер вимкнено", told[0])
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        worker.shelly = mock.AsyncMock()
+        self.assertEqual(await self.run_at(worker, state, 1000 + 16 * 60), [])
+        worker.shelly.assert_not_awaited()  # done: no Shelly call for the rest of the gap
+
+    async def test_zero_turns_it_off(self):
+        worker, state = self.blind_worker(), {}
+        worker.env.BLIND_OFF_SECONDS = "0"
+        await self.run_at(worker, state, 1000)
+        alert = await self.run_at(worker, state, 1000 + 3600)
+        self.assertNotIn("про всяк випадок", alert[0])
+        self.assertEqual(self.switched, [])
+
+    async def test_a_boiler_the_guard_already_keeps_off_is_left_alone(self):
+        for saved in (entry.COOLDOWN_OFF, entry.HELD_ON, None):
+            worker = self.blind_worker({entry.DESIRED_KEY: saved} if saved else {}, plug=logic.OFF)
+            worker.shelly = mock.AsyncMock()
+            state = {"blind_since": 0, "blind_notified": True}
+            self.assertEqual(await self.run_at(worker, state, 3600), [])
+            worker.shelly.assert_not_awaited()
+
+    async def test_shelly_offline_or_failing_is_retried_quietly(self):
+        worker, state = self.blind_worker(), {"blind_since": 0, "blind_notified": True}
+        good = worker.shelly
+        worker.shelly = mock.AsyncMock(return_value={"isok": True, "data": {"online": False}})
+        self.assertEqual(await self.run_at(worker, state, 3600), [])
+        worker.shelly = mock.AsyncMock(side_effect=logic.ApiError("Shelly down"))
+        self.assertEqual(await self.run_at(worker, state, 3660), [])
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], logic.ON)  # not saved: retried
+        worker.shelly = good
+        self.assertEqual(len(await self.run_at(worker, state, 3720)), 1)
+        self.assertEqual(self.switched, [logic.OFF])
+
+    async def switched_off_blind(self):
+        worker, state = self.blind_worker(), {"blind_since": 0, "blind_notified": True}
+        await self.run_at(worker, state, 3600)
+        self.assertEqual(self.switched, [logic.OFF])
+        self.switched.clear()
+        return worker, state
+
+    async def test_data_back_in_range_switches_on_after_the_cooldown(self):
+        worker, state = await self.switched_off_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(230.0))
+        back = await self.run_at(worker, state, 4000)
+        self.assertIn("знову надходять", back[0])
+        self.assertIn("вимкнений через відсутність даних, увімкнеться за 10 хв", back[1])
+        self.assertNotIn("Світло повернулося", "".join(back))  # no outage was seen
+        self.assertEqual(self.switched, [])
+        on = await self.run_at(worker, state, 4000 + 600)
+        self.assertEqual(self.switched, [logic.ON])
+        self.assertIn("Бойлер знову увімкнено", on[0])
+        self.assertNotIn("blind_off", state)
+
+    async def test_data_back_without_grid_is_told_as_the_outage_it_is(self):
+        worker, state = await self.switched_off_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(0.0))
+        back = await self.run_at(worker, state, 4000)
+        self.assertIn("Зникло світло", back[1])
+        self.assertIn("уже був вимкнений", back[1])
+        self.assertEqual(await self.run_at(worker, state, 4060), [])  # once
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(230.0))
+        returned = await self.run_at(worker, state, 4600)
+        self.assertIn("Світло повернулося", returned[0])
+        self.assertIn("Світла не було 10 хв", returned[0])
+
+    async def test_data_back_between_the_thresholds_says_what_the_boiler_waits_for(self):
+        worker, state = await self.switched_off_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(207.0))  # 205..210: stays off
+        back = await self.run_at(worker, state, 4000)
+        self.assertIn("Світло є (мережа 207 В), але напруга низька", back[1])
+        self.assertNotIn("Світла не було", back[1])
+        self.assertEqual(self.switched, [])
+
+
+class DeyeReloginTest(EntryTestCase):
+    async def test_a_fresh_token_refused_too_backs_off_instead_of_logging_in_every_minute(self):
+        worker = self.worker({entry.TOKEN_KEY: "cached"})
+        logins = []
+
+        async def deye_post(path, payload, token=None, query=None):
+            if path == "/v1.0/account/token":
+                logins.append(1)
+                return 200, {"success": True, "accessToken": "fresh", "expiresIn": "5184000"}
+            return 200, {"success": False, "msg": "auth invalid token"}
+
+        worker.deye_post = deye_post
+        await worker.deye_latest(SECRETS)
+        self.assertEqual(len(logins), 1)
+        for _ in range(3):
+            with self.assertRaises(logic.ApiError):
+                await worker.deye_latest(SECRETS)
+        self.assertEqual(len(logins), 1)
 
 
 class ShellyPacingTest(EntryTestCase):
@@ -895,6 +1036,32 @@ class DeyeLoginBackoffTest(EntryTestCase):
         self.assertIn(entry.TOKEN_BACKOFF_KEY, data)
 
 
+class DeyeTokenWithoutKvTest(EntryTestCase):
+    """A KV outage must not blind the guard (no token) or make it log in every minute."""
+
+    def kv_down(self, worker):
+        worker.env.STATE.get = mock.AsyncMock(side_effect=RuntimeError("KV down"))
+        worker.env.STATE.put = mock.AsyncMock(side_effect=RuntimeError("KV down"))
+
+    async def test_logs_in_once_and_reuses_the_token_from_memory(self):
+        worker = self.worker()
+        self.kv_down(worker)
+        login = {"success": True, "accessToken": "fresh", "expiresIn": "5184000"}
+        worker.deye_post = mock.AsyncMock(return_value=(200, login))
+        self.assertEqual(await worker.deye_token(SECRETS), "fresh")
+        self.assertEqual(await worker.deye_token(SECRETS), "fresh")
+        self.assertEqual(worker.deye_post.await_count, 1)
+
+    async def test_a_refused_login_backs_off_in_memory(self):
+        worker = self.worker()
+        self.kv_down(worker)
+        worker.deye_post = mock.AsyncMock(return_value=(200, {"success": False, "msg": "bad password"}))
+        for _ in range(3):
+            with self.assertRaises(logic.ApiError):
+                await worker.deye_token(SECRETS)
+        self.assertEqual(worker.deye_post.await_count, 1)
+
+
 class WebhookReplayTest(EntryTestCase):
     async def test_duplicate_update_is_handled_once(self):
         worker = self.worker()
@@ -903,6 +1070,16 @@ class WebhookReplayTest(EntryTestCase):
         await worker.handle_webhook_update({"update_id": 5})
         await worker.handle_webhook_update({"update_id": 4})
         self.assertEqual(worker.handle_updates.await_count, 1)
+
+    async def test_the_guard_expires_before_telegram_restarts_its_ids(self):
+        """After a week without updates Telegram picks the next update_id at random; a
+        guard without an expiry would drop a lower one as a replay for good."""
+        worker = self.worker()
+        worker.handle_updates = mock.AsyncMock()
+        worker.kv_put = mock.AsyncMock()
+        await worker.handle_webhook_update({"update_id": 900_000_000})
+        ttl = worker.kv_put.await_args.kwargs["ttl"]
+        self.assertTrue(60 <= ttl < 7 * 24 * 3600)
 
 
 class WebhookSecretTest(EntryTestCase):
@@ -980,17 +1157,69 @@ class ScheduledTest(EntryTestCase):
         await worker.scheduled(None)
         self.assertEqual(self.events, ["grid alert", "getUpdates"])
 
-    async def test_no_warning_is_saved_over_an_unsent_alert(self):
+    def saved_state(self, worker):
+        return entry.json.loads(worker.env.STATE.data[entry.NOTIFY_KEY])
+
+    async def test_an_unsent_alert_is_kept_and_sent_first_by_a_later_run(self):
         worker = self.scheduled_worker((False, REFUSED))
+        telegram_up = False
 
-        async def send_fails(text, reply_to=None, markup=None):
+        async def send(text, reply_to=None, markup=None):
             self.events.append(text)
-            return text != "grid alert"  # Telegram didn't take the grid alert; others go through
+            return telegram_up
 
-        worker.send_telegram = send_fails
+        worker.send_telegram = send
         await worker.scheduled(None)
-        self.assertEqual(self.events, ["grid alert", "getUpdates"])  # the warning waits
-        self.assertNotIn(entry.NOTIFY_KEY, worker.env.STATE.data)  # the alert is retried next run
+        warning = entry.notify.WEBHOOK_PROBLEM_MESSAGES["conflict"]
+        # The warning queues up behind the alert instead of overtaking or replacing it.
+        self.assertEqual(self.events, ["grid alert", "getUpdates", "grid alert"])
+        self.assertEqual([m["text"] for m in self.saved_state(worker)["unsent"]], ["grid alert", warning])
+
+        async def quiet_check(state, outbox, run):
+            pass
+
+        worker.check, telegram_up = quiet_check, True
+        self.events.clear()
+        await worker.scheduled(None)
+        self.assertEqual(self.events, ["grid alert", warning, "getUpdates"])
+        self.assertNotIn("unsent", self.saved_state(worker))
+        self.events.clear()
+        await worker.scheduled(None)
+        self.assertEqual(self.events, ["getUpdates"])  # sent once, not again
+
+    async def test_an_alert_that_waited_says_how_late_it_is(self):
+        worker = self.scheduled_worker((True, {"ok": True, "result": []}))
+        old = {"unsent": [{"text": "grid alert", "at": entry.time.time() - 15 * 60}]}
+        worker.env.STATE.data[entry.NOTIFY_KEY] = entry.json.dumps(old)
+
+        async def quiet_check(state, outbox, run):
+            pass
+
+        worker.check = quiet_check
+        await worker.scheduled(None)
+        self.assertIn("затрималося на 15 хв", self.events[0])
+        self.assertTrue(self.events[0].endswith("grid alert"))
+
+    async def test_a_kv_outage_does_not_stop_the_plug_logic(self):
+        """Grid lost while KV can't be read: the boiler is still switched off, the
+        alert still goes out, and nothing is saved over the unread notify state."""
+        worker = self.worker({entry.DESIRED_KEY: logic.ON}, plug=logic.ON, voltage=0.0)
+        worker.env.TELEGRAM_BOT_TOKEN = "123456789:" + "A" * 35
+        worker.env.TELEGRAM_CHAT_ID = "-100"
+        sent = []
+
+        async def telegram(method, payload):
+            if method == "sendMessage":
+                sent.append(payload["text"])
+            return True, {"ok": True, "result": []}
+
+        worker.telegram = telegram
+        worker.env.STATE.get = mock.AsyncMock(side_effect=RuntimeError("KV down"))
+        worker.env.STATE.put = mock.AsyncMock(side_effect=RuntimeError("KV down"))
+        await worker.scheduled(None)
+        self.assertEqual(self.switched, [logic.OFF])
+        self.assertEqual(len([m for m in sent if "Зникло світло" in m]), 1)
+        self.assertNotIn(entry.NOTIFY_KEY, worker.env.STATE.data)
 
     async def test_a_blip_does_not_repeat_the_conflict_warning(self):
         worker = self.scheduled_worker((False, REFUSED))

@@ -15,6 +15,10 @@ Every minute:
 1. Poll Deye Cloud `/v1.0/device/latest` and read `GridVoltageL1L2`.
    - If Deye is unreachable, the inverter is offline, or the reading is older
      than `MAX_DATA_AGE_SECONDS`, do nothing. The plug keeps its current state.
+   - Fail-safe: once that has lasted `BLIND_OFF_SECONDS` (900 s; `0` turns this off),
+     a boiler that is on is switched off, since the grid may have gone together with the
+     data. It switches back on by the usual path: a reading in range, then the cooldown.
+     If Shelly can't be reached either, this is retried every minute.
    - Only the grid key is used: `LoadVoltage*`/`ACVoltage*` are the inverter's own
      output and stay at ~230 V on battery.
 2. Compute the desired plug state with hysteresis on both sides:
@@ -28,6 +32,9 @@ Every minute:
      inverter's "Grid V High (Normal)" and `HIGH_ON_VOLTAGE` to "Grid V High
      (Reconnect)"; keep `OFF_VOLTAGE`/`ON_VOLTAGE` at or above its low limits.
    - in between → keep the previous desired state
+   - all four thresholds must be set in `wrangler.toml` (`[vars]`, and again in each
+     environment, which doesn't inherit them): the code has no fallback, so a missing
+     one fails the run with an error alert instead of switching at some other voltage.
    - `GridRelayStatus` (`GRID_RELAY_KEY`) `Break` → off, whatever the voltage: the
      inverter has disconnected itself from the grid (`Pull-in` while connected). Without
      that key, or with any other value, the voltage limits above stand in for it.
@@ -45,7 +52,8 @@ Every minute:
    If Shelly is offline, nothing is saved, so the next run retries.
 
 The Deye bearer token is cached in KV and refreshed automatically when it
-expires or is rejected.
+expires or is rejected. A KV outage doesn't stop the guard: the token is then kept in
+the Worker's memory, and notification state is neither read nor overwritten.
 
 ## Security
 
@@ -76,7 +84,8 @@ expires or is rejected.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
   Ideally use a Shelly account that holds only this plug: the key can't be scoped.
 - Outbound requests time out after 15 s and never follow redirects.
-- A failed Deye login backs off for 15 minutes (no account lockout from retry loops).
+- A failed Deye login backs off for 15 minutes (no account lockout from retry loops),
+  and so does a fresh token that Deye refuses right away.
 - Secrets are never logged. `.prod.vars`, `.dev.vars` and `.wrangler/` are git-ignored,
   and a pre-commit hook refuses commits containing secret files or real secret values.
 - wrangler is pinned in `package-lock.json` and installed only by `npm ci`; scripts
@@ -162,8 +171,9 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 - the inverter disconnects itself from the grid (`GridRelayStatus` = `Break`) while grid
   is present, and when it has reconnected and the boiler is back on after the cooldown;
 - Deye has given no trustworthy data for 5 minutes (protection paused), with the likely
-  cause (Deye unreachable, inverter offline, stale upload, ...), and on recovery with how
-  long the gap lasted. Every such run also logs the exact cause, e.g.
+  cause (Deye unreachable, inverter offline, stale upload, ...) and how soon the boiler
+  will be switched off as a precaution; when it is (after `BLIND_OFF_SECONDS`); and on
+  recovery with how long the gap lasted. Every such run also logs the exact cause, e.g.
   `no trustworthy grid reading (last upload 4 min ago)`;
 - the plug can't be switched because Shelly is unreachable;
 - a run fails with an error (repeated at most hourly), and when it works again;
@@ -172,7 +182,8 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
 Each event is sent once, not every minute. Messages go out only after the plug logic
 has run, with a 10 s timeout; a Telegram failure is logged and never affects the
-boiler. Only `https://api.telegram.org` is contacted, through an allowlist of Bot API
+boiler. A message Telegram didn't take is kept (up to 20, for a day) and sent by the
+next run that gets through, in order, marked with how late it is. Only `https://api.telegram.org` is contacted, through an allowlist of Bot API
 methods.
 
 Setup:
@@ -300,7 +311,7 @@ the same plain 404 (`src/webhook.py`):
 After that, the same chat and admin checks as in polling mode apply. Status and
 the panel are each answered at most once per 10 s (they read Deye and Shelly), Telegram delivers one update at a time
 (`max_connections=1`), an update is never handled twice (`update_id` is
-remembered), and the Worker always answers 200 so Telegram doesn't retry an action.
+remembered for a day: Telegram restarts its ids at random after a quiet week), and the Worker always answers 200 so Telegram doesn't retry an action.
 The Worker can't change its own webhook: `setWebhook` and `deleteWebhook` are only
 in the setup script's allowlist. The Worker's own allowlist is `sendMessage`,
 `getUpdates`, `setMyCommands`, `answerCallbackQuery` and the read-only
