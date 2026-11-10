@@ -312,6 +312,54 @@ def desired_state(
     return previous
 
 
+# What is saved as the desired state besides ON and OFF.
+# HELD_ON: saved instead of ON when grid is back but the admin holds the plug off, so
+# once the hold ends (by any path) the next run with grid sees work to do and switches on.
+HELD_ON = "on:held"
+# COOLDOWN_OFF: saved instead of OFF by every switch-off. Switching back on then waits
+# until the voltage has stayed in range for VOLTAGE_COOLDOWN_SECONDS, so a voltage
+# hovering around a threshold can't flip the boiler on and off every minute. This
+# covers outages too: a short outage and reconnect flaps the same way. (A plain OFF is
+# from before this existed.)
+COOLDOWN_OFF = "off:cooldown"
+
+
+def saved_meaning(saved):
+    """The desired state a saved value stands for: HELD_ON counts as ON, COOLDOWN_OFF as OFF."""
+    return {HELD_ON: ON, COOLDOWN_OFF: OFF}.get(saved, saved)
+
+
+WAIT = "wait"  # in range again after a switch-off, but not for long enough yet
+KEEP = "keep"  # nothing to do
+APPLY = "apply"  # bring the plug to Step.target and save the new desired state
+
+
+class Step(NamedTuple):
+    """What one run should do about the plug (see plan)."""
+
+    action: str
+    target: str | None = None  # APPLY: the plug state to produce
+    held: bool = False  # APPLY: the grid says on, but the admin's hold keeps it off
+    resume: bool = False  # APPLY: the grid didn't change; the hold that kept it off ended
+
+
+def plan(saved, desired, held, wait_left=0.0):
+    """The run's decision, from what was saved and what this reading asks for.
+
+    saved: the saved desired state (ON, HELD_ON, COOLDOWN_OFF, a legacy OFF, or None
+    on the very first run). desired: desired_state() for this reading (None: no
+    opinion). held: the admin holds the boiler off (only looked at when desired is
+    ON). wait_left: cooldown_left() when desired is ON after a switch-off.
+    """
+    if desired == ON and saved == COOLDOWN_OFF and wait_left > 0:
+        return Step(WAIT)
+    resume = saved == HELD_ON and desired == ON and not held
+    if desired is None or (desired == saved_meaning(saved) and not resume):
+        return Step(KEEP)
+    held = desired == ON and held and not resume  # the admin's manual off wins over grid returning
+    return Step(APPLY, OFF if held else desired, held, resume)
+
+
 def parse_time(text):
     """Epoch seconds saved in KV as text, or None when missing or garbage."""
     try:

@@ -51,15 +51,8 @@ TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on ba
 # minute. Best effort: an isolate may be replaced at any time.
 MEMO = {}
 DESIRED_KEY = "state:desired"
-# Saved instead of "on" when grid is back but the admin holds the plug off, so once the
-# hold ends (by any path) the next run with grid sees work to do and switches on.
-HELD_ON = "on:held"
-# Saved instead of "off" by every switch-off. Switching back on then waits until the
-# voltage has stayed in range for VOLTAGE_COOLDOWN_SECONDS, so a voltage hovering
-# around a threshold can't flip the boiler on and off every minute. This covers
-# outages too: a short outage and reconnect flaps the same way. (A plain "off" is
-# from before this existed.)
-COOLDOWN_OFF = "off:cooldown"
+HELD_ON = logic.HELD_ON  # saved values of DESIRED_KEY besides "on"/"off": see logic.plan
+COOLDOWN_OFF = logic.COOLDOWN_OFF
 ON_PENDING_KEY = "state:on_pending"  # when the voltage came back in range (COOLDOWN_OFF only)
 MODE_KEY = "state:mode"  # "off" while the admin holds the boiler off; absent = automatic
 # Set for a few minutes after the admin presses ⛔: the cron then checks the plug really
@@ -490,7 +483,7 @@ class Default(WorkerEntrypoint):
         """(raw saved value, desired state it stands for): HELD_ON counts as "on",
         COOLDOWN_OFF as "off"."""
         saved = await self.state_get(DESIRED_KEY)
-        return saved, {HELD_ON: logic.ON, COOLDOWN_OFF: logic.OFF}.get(saved, saved)
+        return saved, logic.saved_meaning(saved)
 
     async def clear_on_pending(self):
         """The voltage left the range again (or the boiler is back on): the wait restarts."""
@@ -1068,66 +1061,35 @@ class Default(WorkerEntrypoint):
         saved, previous = await self.saved_desired()
         desired = logic.desired_state(voltage, previous, **thresholds, disconnected=disconnected)
         run["desired"] = desired
-        back_since = None  # when the voltage came back in range after a switch-off
+        # The hold only matters when a switch-on is in question; an ordinary run skips the read.
+        held = desired == logic.ON and saved != logic.ON and await self.held_off()
+        back_since, wait_left = None, 0.0  # when the voltage came back in range after a switch-off
         if desired == logic.ON and saved == COOLDOWN_OFF:
             now = time.time()
             back_since = logic.parse_time(await self.state_get(ON_PENDING_KEY))
-            if logic.cooldown_left(back_since, now, cooldown) > 0:
-                if back_since is None:
-                    await self.state_put(ON_PENDING_KEY, str(now))
-                    # Tell the family now; the switch-on message follows after the wait.
-                    held_now = await self.held_off()
-                    outbox.append(notify.on_back(state, voltage, now, round(cooldown / 60), held_now))
-                log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
-                await self.enforce_hold(secrets, channel, run)
-                return
+            wait_left = logic.cooldown_left(back_since, now, cooldown)
+        step = logic.plan(saved, desired, held, wait_left)  # what to do: all the rest is doing it
+
+        if step.action == logic.WAIT:
+            if back_since is None:
+                await self.state_put(ON_PENDING_KEY, str(now))
+                # Tell the family now; the switch-on message follows after the wait.
+                outbox.append(notify.on_back(state, voltage, now, round(cooldown / 60), held))
+            log(f"grid {voltage:.1f}V back in range; switching on after {cooldown}s of stable voltage")
+            await self.enforce_hold(secrets, channel, run)
+            return
         if desired == logic.OFF and saved == COOLDOWN_OFF:
             await self.clear_on_pending()
-            condition = logic.grid_condition(voltage, thresholds["off_below"], thresholds["high_off"])
-            if state.get("blind_off") and (disconnected or condition != "ok"):
-                # The first reading after a fail-safe switch-off shows a real reason to be
-                # off (outage, voltage, relay): announce that, as the switch-off it would
-                # have been, so the return is later told with the right words and duration.
-                outbox.append(
-                    self.switch_alert(
-                        state,
-                        logic.ON,
-                        logic.OFF,
-                        voltage,
-                        thresholds,
-                        cooldown,
-                        False,
-                        disconnected=relay_state,
-                    )
-                )
-            elif logic.grid_condition(voltage) == "lost":
-                outbox.append(notify.on_lost_again(state, voltage, time.time()))
-            elif disconnected:
-                cooldown_minutes = round(cooldown / 60)
-                outbox.append(notify.on_lost_again(state, voltage, time.time(), "relay", cooldown_minutes))
-            else:  # grid present, but outside the switch-on window (e.g. 196 V after an outage)
-                outbox.append(
-                    notify.on_back_but_low(
-                        state,
-                        voltage,
-                        time.time(),
-                        on_at=thresholds["on_at"],
-                        high_on=thresholds["high_on"],
-                        cooldown_minutes=round(cooldown / 60),
-                    )
-                )
+            outbox.append(self.still_off_alert(state, voltage, relay_state, thresholds, cooldown))
         elif desired == logic.OFF and saved == logic.OFF:
             await self.state_put(DESIRED_KEY, COOLDOWN_OFF)  # switched off before the cooldown existed
-        # Grid unchanged, but the hold that kept the plug off has ended: apply "on" now.
-        resume = saved == HELD_ON and desired == logic.ON and not await self.held_off()
-        if desired is None or (desired == previous and not resume):
+        if step.action == logic.KEEP:
             log(f"grid {voltage:.1f}V, relay={relay!r}, desired={desired}; no change")
             await self.enforce_hold(secrets, channel, run)
             return
 
-        # Desired state changed. The admin's manual off wins over grid returning.
-        held = not resume and desired == logic.ON and await self.held_off()
-        target = logic.OFF if held else desired
+        # Desired state changed, or the hold that kept the plug off has ended.
+        target, held, resume = step.target, step.held, step.resume
 
         # Poll Shelly first, command only if it differs.
         run["plug"] = None  # marks Shelly as called, even if this call fails
@@ -1176,6 +1138,33 @@ class Default(WorkerEntrypoint):
                 back_since=back_since,
                 disconnected=relay_state,
             )
+        )
+
+    def still_off_alert(self, state, voltage, relay_state, thresholds, cooldown):
+        """The boiler is off and this reading keeps it off: the message that is news
+        to the family, if any (each is told once; see the notify functions)."""
+        now, minutes = time.time(), round(cooldown / 60)
+        disconnected = relay_state is True
+        condition = logic.grid_condition(voltage, thresholds["off_below"], thresholds["high_off"])
+        if state.get("blind_off") and (disconnected or condition != "ok"):
+            # The first reading after a fail-safe switch-off shows a real reason to be
+            # off (outage, voltage, relay): announce that, as the switch-off it would
+            # have been, so the return is later told with the right words and duration.
+            return self.switch_alert(
+                state, logic.ON, logic.OFF, voltage, thresholds, cooldown, False, disconnected=relay_state
+            )
+        if logic.grid_condition(voltage) == "lost":
+            return notify.on_lost_again(state, voltage, now)
+        if disconnected:
+            return notify.on_lost_again(state, voltage, now, "relay", minutes)
+        # Grid present, but outside the switch-on window (e.g. 196 V after an outage).
+        return notify.on_back_but_low(
+            state,
+            voltage,
+            now,
+            on_at=thresholds["on_at"],
+            high_on=thresholds["high_on"],
+            cooldown_minutes=minutes,
         )
 
     def switch_alert(self, state, previous, desired, voltage, thresholds, cooldown, switched, **more):
