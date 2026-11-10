@@ -1,7 +1,8 @@
 """Notification decisions and Ukrainian message texts. Pure: no I/O, unit-testable.
 
 All dedup state lives in one small dict (stored as JSON in KV under one key), so a
-run costs one KV read and writes only when something changes.
+run costs one KV read and writes only when something changes. Alerts Telegram didn't
+take wait in the same dict and are retried.
 """
 
 import re
@@ -400,6 +401,42 @@ def on_lost_again(state, voltage, now, cause=None, cooldown_minutes=0):
             f"підключиться до мережі{_cooldown_tail(cooldown_minutes)}."
         )
     return f"⚡️ Світло знову зникло (мережа {_v(voltage)}). Бойлер лишається вимкненим."
+
+
+# --- alerts Telegram didn't take ----------------------------------------------
+# Kept in the state under "unsent" as [{"text", "at"}] and retried by the next runs.
+
+UNSENT_MAX = 20  # the newest are kept; a longer backlog is noise by the time it arrives
+UNSENT_MAX_AGE_SECONDS = 24 * 3600
+LATE_AFTER_SECONDS = 120  # from here a retried alert says how late it is
+
+
+def take_unsent(state, now):
+    """Remove and return the alerts earlier runs couldn't send, oldest first; ones
+    older than UNSENT_MAX_AGE_SECONDS (and anything malformed) are dropped."""
+    items = state.pop("unsent", None)
+    kept = []
+    for item in items if isinstance(items, list) else []:
+        text, at = (item.get("text"), item.get("at")) if isinstance(item, dict) else (None, None)
+        if not isinstance(text, str) or not text or isinstance(at, bool) or not isinstance(at, (int, float)):
+            continue
+        if now - at <= UNSENT_MAX_AGE_SECONDS:
+            kept.append({"text": text, "at": at})
+    return kept
+
+
+def keep_unsent(state, items):
+    """Remember alerts that couldn't be sent, for the next run."""
+    state["unsent"] = list(items)[-UNSENT_MAX:]
+
+
+def late_text(item, now):
+    """The alert's text; one that waited says so, since "Зникло світло" arriving an
+    hour late would otherwise read as news."""
+    delay = now - item["at"]
+    if delay < LATE_AFTER_SECONDS:
+        return item["text"]
+    return f"🕓 Повідомлення затрималося на {duration_text(delay)}:\n{item['text']}"
 
 
 def on_error(state, signature, detail, now):

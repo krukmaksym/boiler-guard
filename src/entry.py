@@ -46,6 +46,10 @@ REQUIRED_SECRETS = (
 TOKEN_KEY = "deye:token"  # noqa: S105
 TOKEN_BACKOFF_KEY = "deye:token_backoff"  # noqa: S105
 TOKEN_BACKOFF_SECONDS = 900  # don't hammer Deye's login (account lockout) on bad credentials
+# This isolate's memory of the Deye token and the login backoff, used when KV can't be
+# read or written, so a KV outage neither blinds the guard nor lets it log in every
+# minute. Best effort: an isolate may be replaced at any time.
+MEMO = {}
 DESIRED_KEY = "state:desired"
 # Saved instead of "on" when grid is back but the admin holds the plug off, so once the
 # hold ends (by any path) the next run with grid sees work to do and switches on.
@@ -66,6 +70,12 @@ VERIFY_OFF_SECONDS = 180
 NOTIFY_KEY = "state:notify"
 OFFSET_KEY = "telegram:offset"
 LAST_UPDATE_KEY = "telegram:last_update"  # webhook: highest update_id handled (replay guard)
+# After a week without updates Telegram picks the next update_id at random, so a saved
+# one must not outlive that: a lower new id would be dropped as a replay for good
+# (webhook), or sit below the saved offset (polling). Telegram retries a failed
+# delivery for far less than a day.
+LAST_UPDATE_TTL_SECONDS = 24 * 3600
+OFFSET_TTL_SECONDS = 6 * 24 * 3600
 WEBHOOK_CHECK_SECONDS = 3600  # webhook mode: getWebhookInfo once an hour (on the hour's first run)
 COOLDOWN_KEY = "telegram:cooldown:{kind}"  # webhook: when status / the panel was last sent
 STATUS_COOLDOWN_SECONDS = 10  # each of them at most this often (on-demand Deye/Shelly reads)
@@ -253,7 +263,7 @@ class Default(WorkerEntrypoint):
                 return
             # Saved before handling, so a retry after a crash can't repeat an action.
             # Best effort: KV is eventually consistent, max_connections=1 does the rest.
-            await self.kv_put(LAST_UPDATE_KEY, str(update_id))
+            await self.kv_put(LAST_UPDATE_KEY, str(update_id), ttl=LAST_UPDATE_TTL_SECONDS)
         await self.handle_updates([update], {}, live=True)
 
     async def scheduled(self, controller, env=None, ctx=None):
@@ -262,8 +272,11 @@ class Default(WorkerEntrypoint):
             return
         outbox = []
         run = {}  # what this run learned, for /status replies
-        state = await self.load_notify_state()
-        before = json.dumps(state, sort_keys=True)
+        # Without the saved notify state (KV unreadable) the run goes on with an empty
+        # one and saves nothing over the real one: alerts must never stop the plug logic.
+        loaded = await self.load_notify_state()
+        state = loaded if loaded is not None else {}
+        before = json.dumps(state, sort_keys=True) if loaded is not None else None
         try:
             await self.check(state, outbox, run)
         except Exception as exc:
@@ -273,19 +286,20 @@ class Default(WorkerEntrypoint):
         else:
             outbox.append(notify.on_success(state))
         finally:
-            delivered = False
+            saved = False
             try:
-                delivered = await self.flush(state, before, [m for m in outbox if m])
+                saved = await self.flush(state, before, [m for m in outbox if m])
             except Exception as exc:  # notifications must never mask the real outcome
                 log(f"notification flush failed: {type(exc).__name__}")
-            await self.poll_and_check_telegram(state, run, delivered, scheduled_time(controller))
+            await self.poll_and_check_telegram(state, run, saved, scheduled_time(controller))
 
-    async def poll_and_check_telegram(self, state, run, delivered, now):
+    async def poll_and_check_telegram(self, state, run, saved, now):
         """After the alerts: poll and answer commands, or in webhook mode check that
         Telegram still delivers, then warn once if updates can't reach the Worker.
-        Never raises. delivered: whether the alerts' flush saved the notify state; if
-        it didn't, the warning waits, since saving now would drop the unsent alerts.
-        now: the cron's scheduled time, so a slow run still hits the hourly check."""
+        Never raises. saved: whether the alerts' flush saved the notify state; if it
+        didn't, the warning waits, since saving now would overwrite a state this run
+        couldn't read or write. now: the cron's scheduled time, so a slow run still
+        hits the hourly check."""
         problem = UNKNOWN
         try:
             secret = self.webhook_secret()
@@ -295,7 +309,7 @@ class Default(WorkerEntrypoint):
                 problem = await self.check_webhook(secret, now)
         except Exception as exc:
             log(f"command handling failed: {type(exc).__name__}")
-        if not delivered or problem is UNKNOWN:
+        if not saved or problem is UNKNOWN:
             return
         try:
             before = json.dumps(state, sort_keys=True)
@@ -481,10 +495,14 @@ class Default(WorkerEntrypoint):
 
     async def deye_token(self, secrets, refresh=False):
         if not refresh:
-            cached = await self.kv_get(TOKEN_KEY)
+            try:
+                cached = await self.kv_get(TOKEN_KEY)
+            except Exception as exc:
+                log(f"Deye token unreadable in KV: {type(exc).__name__}")
+                cached = MEMO.get("token")
             if cached:
                 return cached
-        if await self.kv_get(TOKEN_BACKOFF_KEY):
+        if await self.login_backed_off():
             raise logic.ApiError("Deye login failed recently; backing off")
         status, data = await self.deye_post(
             "/v1.0/account/token",
@@ -499,11 +517,32 @@ class Default(WorkerEntrypoint):
             token, ttl = logic.parse_deye_token(status, data)
         except logic.ApiError:
             if logic.deye_login_backoff(status):
-                await self.kv_put(TOKEN_BACKOFF_KEY, "1", TOKEN_BACKOFF_SECONDS)
+                await self.back_off_login()
             raise
-        await self.kv_put(TOKEN_KEY, token, ttl)
+        MEMO["token"] = token
+        try:
+            await self.kv_put(TOKEN_KEY, token, ttl)
+        except Exception as exc:  # the token still serves this run, and this isolate's next ones
+            log(f"Deye token not saved to KV: {type(exc).__name__}")
         log("refreshed Deye token")
         return token
+
+    async def login_backed_off(self):
+        if time.time() < MEMO.get("backoff_until", 0):
+            return True
+        try:
+            return bool(await self.kv_get(TOKEN_BACKOFF_KEY))
+        except Exception as exc:
+            log(f"Deye login backoff unreadable in KV: {type(exc).__name__}")
+            return False
+
+    async def back_off_login(self):
+        """No Deye login for TOKEN_BACKOFF_SECONDS (remembered in memory too, for when KV is down)."""
+        MEMO["backoff_until"] = time.time() + TOKEN_BACKOFF_SECONDS
+        try:
+            await self.kv_put(TOKEN_BACKOFF_KEY, "1", TOKEN_BACKOFF_SECONDS)
+        except Exception as exc:
+            log(f"Deye login backoff not saved to KV: {type(exc).__name__}")
 
     async def deye_latest(self, secrets):
         payload = {"deviceList": [secrets["INVERTER_SN"]]}
@@ -557,22 +596,38 @@ class Default(WorkerEntrypoint):
     # --- notifications ------------------------------------------------------
 
     async def load_notify_state(self):
+        """The saved notify state; {} when there is none or it is garbage; None when KV
+        can't be read (then nothing may be saved over it, see flush)."""
         try:
-            state = json.loads(await self.kv_get(NOTIFY_KEY) or "{}")
+            raw = await self.kv_get(NOTIFY_KEY)
+        except Exception as exc:
+            log(f"notify state unreadable: {type(exc).__name__}")
+            return None
+        try:
+            state = json.loads(raw or "{}")
         except ValueError:
             state = {}
         return state if isinstance(state, dict) else {}
 
     async def flush(self, state, before, messages):
-        """Send queued messages, then persist dedup state. If a send fails the state is
-        not saved, so the next run retries that notification."""
-        delivered = True
-        for text in messages:
-            delivered = await self.send_telegram(text) and delivered
+        """Send what earlier runs couldn't deliver, then this run's messages, in order.
+        From the first failed send on, everything is kept in the state (notify.keep_unsent)
+        and retried by the next run: most alerts are produced only on the run that saw the
+        change, so they can't simply be produced again. Then save the state if it changed.
+        before: the state as loaded (JSON), or None when it couldn't be read: then
+        nothing is saved. True when the saved state is up to date."""
+        now = time.time()
+        queue = notify.take_unsent(state, now) + [{"text": text, "at": now} for text in messages]
+        for index, item in enumerate(queue):
+            if not await self.send_telegram(notify.late_text(item, now)):
+                notify.keep_unsent(state, queue[index:])
+                break
+        if before is None:
+            return False
         after = json.dumps(state, sort_keys=True)
-        if delivered and after != before:
+        if after != before:
             await self.kv_put(NOTIFY_KEY, after)
-        return delivered
+        return True
 
     def telegram_config(self):
         token = self.var("TELEGRAM_BOT_TOKEN", None)
@@ -647,7 +702,7 @@ class Default(WorkerEntrypoint):
         # Confirm first: a command that crashes this run must not be replayed forever.
         new_offset = bot.next_offset(updates, offset)
         if new_offset != offset:  # KV write only when updates arrived
-            await self.kv_put(OFFSET_KEY, str(new_offset))
+            await self.kv_put(OFFSET_KEY, str(new_offset), ttl=OFFSET_TTL_SECONDS)
         await self.handle_updates(updates, run, live=False)
         return None
 

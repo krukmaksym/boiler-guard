@@ -45,7 +45,8 @@ Every minute:
    If Shelly is offline, nothing is saved, so the next run retries.
 
 The Deye bearer token is cached in KV and refreshed automatically when it
-expires or is rejected.
+expires or is rejected. A KV outage doesn't stop the guard: the token is then kept in
+the Worker's memory, and notification state is neither read nor overwritten.
 
 ## Security
 
@@ -172,7 +173,8 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 
 Each event is sent once, not every minute. Messages go out only after the plug logic
 has run, with a 10 s timeout; a Telegram failure is logged and never affects the
-boiler. Only `https://api.telegram.org` is contacted, through an allowlist of Bot API
+boiler. A message Telegram didn't take is kept (up to 20, for a day) and sent by the
+next run that gets through, in order, marked with how late it is. Only `https://api.telegram.org` is contacted, through an allowlist of Bot API
 methods.
 
 Setup:
@@ -300,7 +302,7 @@ the same plain 404 (`src/webhook.py`):
 After that, the same chat and admin checks as in polling mode apply. Status and
 the panel are each answered at most once per 10 s (they read Deye and Shelly), Telegram delivers one update at a time
 (`max_connections=1`), an update is never handled twice (`update_id` is
-remembered), and the Worker always answers 200 so Telegram doesn't retry an action.
+remembered for a day: Telegram restarts its ids at random after a quiet week), and the Worker always answers 200 so Telegram doesn't retry an action.
 The Worker can't change its own webhook: `setWebhook` and `deleteWebhook` are only
 in the setup script's allowlist. The Worker's own allowlist is `sendMessage`,
 `getUpdates`, `setMyCommands`, `answerCallbackQuery` and the read-only
