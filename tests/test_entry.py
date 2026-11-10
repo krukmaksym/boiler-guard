@@ -47,6 +47,8 @@ import logic  # noqa: E402
 
 SECRETS = {name: f"test-{name.lower()}" for name in entry.REQUIRED_SECRETS}
 SECRETS["SHELLY_HOST"] = "shelly-1-eu.shelly.cloud"
+# The voltage thresholds have no fallback in code, so every test Worker sets them.
+VOLTS = {"OFF_VOLTAGE": "205", "ON_VOLTAGE": "210", "HIGH_ON_VOLTAGE": "255", "HIGH_OFF_VOLTAGE": "265"}
 
 
 class FakeKV:
@@ -112,7 +114,7 @@ class EntryTestCase(unittest.IsolatedAsyncioTestCase):
 
     def worker(self, state=None, prod_state=None, plug=logic.OFF, voltage=230.0):
         kv_data, plug_data = split_state(state)
-        env = types.SimpleNamespace(STATE=FakeKV(kv_data), SHELLY_CHANNEL="0", **SECRETS)
+        env = types.SimpleNamespace(STATE=FakeKV(kv_data), SHELLY_CHANNEL="0", **SECRETS, **VOLTS)
         env.PLUG = FakeNamespace(plug_data, kv=env.STATE)
         if prod_state is not None:
             env.PROD_PLUG = FakeNamespace(prod_state)
@@ -855,6 +857,15 @@ class ConfigCheckTest(EntryTestCase):
             del worker.deye_reading  # the real one, which reads MAX_DATA_AGE_SECONDS
             with self.assertRaisesRegex(entry.ConfigError, name):
                 await worker.check({}, [], {})
+
+    async def test_a_missing_threshold_is_a_config_error_not_a_silent_default(self):
+        for name in VOLTS:
+            worker = self.worker(plug=logic.ON, voltage=0.0)
+            delattr(worker.env, name)
+            with self.assertRaisesRegex(entry.ConfigError, f"missing the {name} variable"):
+                await worker.check({}, [], {})
+            self.assertEqual(self.switched, [])
+            self.assertEqual(worker.reply_limits(), {})  # replies still work, without numbers
 
     async def test_negative_cooldown_is_a_config_error(self):
         worker = self.worker()

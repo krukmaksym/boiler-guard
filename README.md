@@ -32,6 +32,9 @@ Every minute:
      inverter's "Grid V High (Normal)" and `HIGH_ON_VOLTAGE` to "Grid V High
      (Reconnect)"; keep `OFF_VOLTAGE`/`ON_VOLTAGE` at or above its low limits.
    - in between → keep the previous desired state
+   - all four thresholds must be set in `wrangler.toml` (`[vars]`, and again in each
+     environment, which doesn't inherit them): the code has no fallback, so a missing
+     one fails the run with an error alert instead of switching at some other voltage.
    - `GridRelayStatus` (`GRID_RELAY_KEY`) `Break` → off, whatever the voltage: the
      inverter has disconnected itself from the grid (`Pull-in` while connected). Without
      that key, or with any other value, the voltage limits above stand in for it.

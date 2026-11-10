@@ -42,6 +42,7 @@ BATTERY_VOLTAGE_KEY = "BatteryVoltage"
 # live reading is used). 1656 W was measured at 229 V.
 BOILER_WATTS = "1670"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
+# The four voltage thresholds are required: the code has no fallback for them.
 # The gap between ON_VOLTAGE and OFF_VOLTAGE must exceed the drop the boiler's own
 # load causes on this weak grid (11-13 V measured on 2026-11-05/06), or switching on
 # pulls the voltage under OFF_VOLTAGE within minutes and the boiler cycles: 15 V here.
@@ -114,6 +115,7 @@ BATTERY_VOLTAGE_KEY = "BatteryVoltage"
 # live reading is used). 1656 W was measured at 229 V.
 BOILER_WATTS = "1670"
 GRID_RELAY_KEY = "GridRelayStatus"  # "Pull-in" on grid, "Break" off grid (boiler off)
+# The four voltage thresholds are required: the code has no fallback for them.
 # The gap between ON_VOLTAGE and OFF_VOLTAGE must exceed the drop the boiler's own
 # load causes on this weak grid (11-13 V measured on 2026-11-05/06), or switching on
 # pulls the voltage under OFF_VOLTAGE within minutes and the boiler cycles: 15 V here.

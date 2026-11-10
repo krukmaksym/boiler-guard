@@ -343,10 +343,10 @@ class Default(WorkerEntrypoint):
         order OFF <= ON <= HIGH_ON <= HIGH_OFF, or the hysteresis breaks (a voltage
         between a swapped pair would count as in range), so anything else is a config error."""
         values = {
-            "off_below": self.volts("OFF_VOLTAGE", "205"),
-            "on_at": self.volts("ON_VOLTAGE", "210"),
-            "high_on": self.volts("HIGH_ON_VOLTAGE", "255"),
-            "high_off": self.volts("HIGH_OFF_VOLTAGE", "265"),
+            "off_below": self.volts("OFF_VOLTAGE"),
+            "on_at": self.volts("ON_VOLTAGE"),
+            "high_on": self.volts("HIGH_ON_VOLTAGE"),
+            "high_off": self.volts("HIGH_OFF_VOLTAGE"),
         }
         if not values["on_at"] >= values["off_below"]:  # also refuses NaN
             raise ConfigError("ON_VOLTAGE must not be below OFF_VOLTAGE")
@@ -354,11 +354,17 @@ class Default(WorkerEntrypoint):
             raise ConfigError("need ON_VOLTAGE <= HIGH_ON_VOLTAGE <= HIGH_OFF_VOLTAGE")
         return values
 
-    def volts(self, name, default):
-        """A voltage variable as a float. Names the variable when it isn't a number: a
-        bare ValueError would reach the chat as just "ValueError"."""
+    def volts(self, name):
+        """A voltage threshold as a float. There is no fallback in code: the right values
+        depend on the grid and the inverter (see wrangler.toml), and a default that
+        drifted from them would switch the boiler at the wrong voltage without a word
+        (wrangler environments don't inherit [vars], so one is easy to leave out). A
+        missing or non-numeric one is a config error naming the variable."""
+        value = self.var(name, None)
+        if value is None:
+            raise ConfigError(f"missing the {name} variable (see [vars] in wrangler.toml)")
         try:
-            return float(self.var(name, default))
+            return float(value)
         except ValueError:
             raise ConfigError(f"{name} must be a number") from None
 
