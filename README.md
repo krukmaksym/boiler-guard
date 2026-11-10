@@ -15,6 +15,10 @@ Every minute:
 1. Poll Deye Cloud `/v1.0/device/latest` and read `GridVoltageL1L2`.
    - If Deye is unreachable, the inverter is offline, or the reading is older
      than `MAX_DATA_AGE_SECONDS`, do nothing. The plug keeps its current state.
+   - Fail-safe: once that has lasted `BLIND_OFF_SECONDS` (900 s; `0` turns this off),
+     a boiler that is on is switched off, since the grid may have gone together with the
+     data. It switches back on by the usual path: a reading in range, then the cooldown.
+     If Shelly can't be reached either, this is retried every minute.
    - Only the grid key is used: `LoadVoltage*`/`ACVoltage*` are the inverter's own
      output and stay at ~230 V on battery.
 2. Compute the desired plug state with hysteresis on both sides:
@@ -77,7 +81,8 @@ the Worker's memory, and notification state is neither read nor overwritten.
 - The Shelly auth key is sent in a POST body (never a URL) and only to `*.shelly.cloud`.
   Ideally use a Shelly account that holds only this plug: the key can't be scoped.
 - Outbound requests time out after 15 s and never follow redirects.
-- A failed Deye login backs off for 15 minutes (no account lockout from retry loops).
+- A failed Deye login backs off for 15 minutes (no account lockout from retry loops),
+  and so does a fresh token that Deye refuses right away.
 - Secrets are never logged. `.prod.vars`, `.dev.vars` and `.wrangler/` are git-ignored,
   and a pre-commit hook refuses commits containing secret files or real secret values.
 - wrangler is pinned in `package-lock.json` and installed only by `npm ci`; scripts
@@ -163,8 +168,9 @@ The Worker can message a Telegram chat (texts are in Ukrainian) when:
 - the inverter disconnects itself from the grid (`GridRelayStatus` = `Break`) while grid
   is present, and when it has reconnected and the boiler is back on after the cooldown;
 - Deye has given no trustworthy data for 5 minutes (protection paused), with the likely
-  cause (Deye unreachable, inverter offline, stale upload, ...), and on recovery with how
-  long the gap lasted. Every such run also logs the exact cause, e.g.
+  cause (Deye unreachable, inverter offline, stale upload, ...) and how soon the boiler
+  will be switched off as a precaution; when it is (after `BLIND_OFF_SECONDS`); and on
+  recovery with how long the gap lasted. Every such run also logs the exact cause, e.g.
   `no trustworthy grid reading (last upload 4 min ago)`;
 - the plug can't be switched because Shelly is unreachable;
 - a run fails with an error (repeated at most hourly), and when it works again;

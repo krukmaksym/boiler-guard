@@ -847,6 +847,15 @@ class ConfigCheckTest(EntryTestCase):
             with self.assertRaises(entry.ConfigError):
                 await worker.check({}, [], {})
 
+    async def test_a_bad_number_names_its_variable(self):
+        for name in ("OFF_VOLTAGE", "SHELLY_CHANNEL", "BLIND_OFF_SECONDS", "MAX_DATA_AGE_SECONDS"):
+            worker = self.worker()
+            setattr(worker.env, name, "abc")
+            worker.deye_latest = mock.AsyncMock(return_value={})
+            del worker.deye_reading  # the real one, which reads MAX_DATA_AGE_SECONDS
+            with self.assertRaisesRegex(entry.ConfigError, name):
+                await worker.check({}, [], {})
+
     async def test_negative_cooldown_is_a_config_error(self):
         worker = self.worker()
         worker.env.VOLTAGE_COOLDOWN_SECONDS = "-5"
@@ -869,6 +878,126 @@ class ConfigCheckTest(EntryTestCase):
         self.assertIsNone(await worker.answer_commands({}))
         self.assertNotIn("offset", worker.telegram.await_args.args[1])
         self.assertEqual(worker.env.STATE.data[entry.OFFSET_KEY], "10")
+
+
+class BlindFailSafeTest(EntryTestCase):
+    """No trustworthy Deye reading for BLIND_OFF_SECONDS: the boiler is switched off."""
+
+    BLIND = logic.Reading(problem=("stale", "last upload 20 min ago"))
+
+    def blind_worker(self, state=None, plug=logic.ON):
+        worker = self.worker({entry.DESIRED_KEY: logic.ON} if state is None else state, plug=plug)
+        worker.deye_reading = mock.AsyncMock(return_value=self.BLIND)
+        return worker
+
+    async def run_at(self, worker, state, at):
+        outbox = []
+        with mock.patch.object(entry.time, "time", return_value=at):
+            await worker.check(state, outbox, {})
+        return [m for m in outbox if m]
+
+    async def test_switches_off_once_after_the_limit(self):
+        worker, state = self.blind_worker(), {}
+        self.assertEqual(await self.run_at(worker, state, 1000), [])
+        alert = await self.run_at(worker, state, 1000 + 5 * 60)
+        self.assertIn("ще 10 хв", alert[0])  # the blind alert says the switch-off follows
+        self.assertEqual(await self.run_at(worker, state, 1000 + 14 * 60), [])
+        self.assertEqual(self.switched, [])
+        told = await self.run_at(worker, state, 1000 + 15 * 60)
+        self.assertEqual(self.switched, [logic.OFF])
+        self.assertIn("немає вже 15 хв, тож бойлер вимкнено", told[0])
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], entry.COOLDOWN_OFF)
+        worker.shelly = mock.AsyncMock()
+        self.assertEqual(await self.run_at(worker, state, 1000 + 16 * 60), [])
+        worker.shelly.assert_not_awaited()  # done: no Shelly call for the rest of the gap
+
+    async def test_zero_turns_it_off(self):
+        worker, state = self.blind_worker(), {}
+        worker.env.BLIND_OFF_SECONDS = "0"
+        await self.run_at(worker, state, 1000)
+        alert = await self.run_at(worker, state, 1000 + 3600)
+        self.assertNotIn("про всяк випадок", alert[0])
+        self.assertEqual(self.switched, [])
+
+    async def test_a_boiler_the_guard_already_keeps_off_is_left_alone(self):
+        for saved in (entry.COOLDOWN_OFF, entry.HELD_ON, None):
+            worker = self.blind_worker({entry.DESIRED_KEY: saved} if saved else {}, plug=logic.OFF)
+            worker.shelly = mock.AsyncMock()
+            state = {"blind_since": 0, "blind_notified": True}
+            self.assertEqual(await self.run_at(worker, state, 3600), [])
+            worker.shelly.assert_not_awaited()
+
+    async def test_shelly_offline_or_failing_is_retried_quietly(self):
+        worker, state = self.blind_worker(), {"blind_since": 0, "blind_notified": True}
+        good = worker.shelly
+        worker.shelly = mock.AsyncMock(return_value={"isok": True, "data": {"online": False}})
+        self.assertEqual(await self.run_at(worker, state, 3600), [])
+        worker.shelly = mock.AsyncMock(side_effect=logic.ApiError("Shelly down"))
+        self.assertEqual(await self.run_at(worker, state, 3660), [])
+        self.assertEqual(worker.plug_data[entry.DESIRED_KEY], logic.ON)  # not saved: retried
+        worker.shelly = good
+        self.assertEqual(len(await self.run_at(worker, state, 3720)), 1)
+        self.assertEqual(self.switched, [logic.OFF])
+
+    async def switched_off_blind(self):
+        worker, state = self.blind_worker(), {"blind_since": 0, "blind_notified": True}
+        await self.run_at(worker, state, 3600)
+        self.assertEqual(self.switched, [logic.OFF])
+        self.switched.clear()
+        return worker, state
+
+    async def test_data_back_in_range_switches_on_after_the_cooldown(self):
+        worker, state = await self.switched_off_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(230.0))
+        back = await self.run_at(worker, state, 4000)
+        self.assertIn("знову надходять", back[0])
+        self.assertIn("вимкнений через відсутність даних, увімкнеться за 10 хв", back[1])
+        self.assertNotIn("Світло повернулося", "".join(back))  # no outage was seen
+        self.assertEqual(self.switched, [])
+        on = await self.run_at(worker, state, 4000 + 600)
+        self.assertEqual(self.switched, [logic.ON])
+        self.assertIn("Бойлер знову увімкнено", on[0])
+        self.assertNotIn("blind_off", state)
+
+    async def test_data_back_without_grid_is_told_as_the_outage_it_is(self):
+        worker, state = await self.switched_off_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(0.0))
+        back = await self.run_at(worker, state, 4000)
+        self.assertIn("Зникло світло", back[1])
+        self.assertIn("уже був вимкнений", back[1])
+        self.assertEqual(await self.run_at(worker, state, 4060), [])  # once
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(230.0))
+        returned = await self.run_at(worker, state, 4600)
+        self.assertIn("Світло повернулося", returned[0])
+        self.assertIn("Світла не було 10 хв", returned[0])
+
+    async def test_data_back_between_the_thresholds_says_what_the_boiler_waits_for(self):
+        worker, state = await self.switched_off_blind()
+        worker.deye_reading = mock.AsyncMock(return_value=logic.Reading(207.0))  # 205..210: stays off
+        back = await self.run_at(worker, state, 4000)
+        self.assertIn("Світло є (мережа 207 В), але напруга низька", back[1])
+        self.assertNotIn("Світла не було", back[1])
+        self.assertEqual(self.switched, [])
+
+
+class DeyeReloginTest(EntryTestCase):
+    async def test_a_fresh_token_refused_too_backs_off_instead_of_logging_in_every_minute(self):
+        worker = self.worker({entry.TOKEN_KEY: "cached"})
+        logins = []
+
+        async def deye_post(path, payload, token=None, query=None):
+            if path == "/v1.0/account/token":
+                logins.append(1)
+                return 200, {"success": True, "accessToken": "fresh", "expiresIn": "5184000"}
+            return 200, {"success": False, "msg": "auth invalid token"}
+
+        worker.deye_post = deye_post
+        await worker.deye_latest(SECRETS)
+        self.assertEqual(len(logins), 1)
+        for _ in range(3):
+            with self.assertRaises(logic.ApiError):
+                await worker.deye_latest(SECRETS)
+        self.assertEqual(len(logins), 1)
 
 
 class ShellyPacingTest(EntryTestCase):

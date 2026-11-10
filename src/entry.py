@@ -350,10 +350,10 @@ class Default(WorkerEntrypoint):
         order OFF <= ON <= HIGH_ON <= HIGH_OFF, or the hysteresis breaks (a voltage
         between a swapped pair would count as in range), so anything else is a config error."""
         values = {
-            "off_below": float(self.var("OFF_VOLTAGE", "205")),
-            "on_at": float(self.var("ON_VOLTAGE", "210")),
-            "high_on": float(self.var("HIGH_ON_VOLTAGE", "255")),
-            "high_off": float(self.var("HIGH_OFF_VOLTAGE", "265")),
+            "off_below": self.volts("OFF_VOLTAGE", "205"),
+            "on_at": self.volts("ON_VOLTAGE", "210"),
+            "high_on": self.volts("HIGH_ON_VOLTAGE", "255"),
+            "high_off": self.volts("HIGH_OFF_VOLTAGE", "265"),
         }
         if not values["on_at"] >= values["off_below"]:  # also refuses NaN
             raise ConfigError("ON_VOLTAGE must not be below OFF_VOLTAGE")
@@ -361,16 +361,36 @@ class Default(WorkerEntrypoint):
             raise ConfigError("need ON_VOLTAGE <= HIGH_ON_VOLTAGE <= HIGH_OFF_VOLTAGE")
         return values
 
-    def cooldown_seconds(self):
-        """VOLTAGE_COOLDOWN_SECONDS: how long the voltage must stay in range before the
-        boiler switches back on after a voltage switch-off (0 turns the wait off)."""
+    def volts(self, name, default):
+        """A voltage variable as a float. Names the variable when it isn't a number: a
+        bare ValueError would reach the chat as just "ValueError"."""
         try:
-            value = int(self.var("VOLTAGE_COOLDOWN_SECONDS", "600"))
+            return float(self.var(name, default))
+        except ValueError:
+            raise ConfigError(f"{name} must be a number") from None
+
+    def whole(self, name, default, unit=""):
+        """A variable that must be a whole number, 0 or more."""
+        try:
+            value = int(self.var(name, default))
         except ValueError:
             value = -1
         if value < 0:
-            raise ConfigError("VOLTAGE_COOLDOWN_SECONDS must be a whole number of seconds, 0 or more")
+            raise ConfigError(f"{name} must be a whole number{unit}, 0 or more")
         return value
+
+    def cooldown_seconds(self):
+        """VOLTAGE_COOLDOWN_SECONDS: how long the voltage must stay in range before the
+        boiler switches back on after a voltage switch-off (0 turns the wait off)."""
+        return self.whole("VOLTAGE_COOLDOWN_SECONDS", "600", " of seconds")
+
+    def blind_off_seconds(self):
+        """BLIND_OFF_SECONDS: after this long without a trustworthy Deye reading the
+        boiler is switched off, in case the grid went with the data (0: never)."""
+        return self.whole("BLIND_OFF_SECONDS", "900", " of seconds")
+
+    def channel(self):
+        return self.whole("SHELLY_CHANNEL", "0")
 
     # --- KV ---------------------------------------------------------------
 
@@ -551,6 +571,9 @@ class Default(WorkerEntrypoint):
             status, data = await self.deye_post("/v1.0/device/latest", payload, token=token)
             if not logic.is_deye_auth_error(status, data):
                 return data
+        # Even a brand-new token was refused: another login won't help, and one every
+        # minute risks an account lockout. Wait out the backoff like a failed login.
+        await self.back_off_login()
         return data
 
     async def deye_reading(self, secrets):
@@ -559,10 +582,11 @@ class Default(WorkerEntrypoint):
         try:
             data = await self.deye_latest(secrets)
         except Exception as exc:  # network errors, bad token response, ...
-            log(f"Deye unavailable: {type(exc).__name__}: {exc}")
+            # Only our own messages: a runtime error's text may hold a URL (see error_summary).
+            log(f"Deye unavailable: {error_summary(exc)[1]}")
             return logic.Reading(problem=("unreachable", type(exc).__name__))
         now = time.time()
-        max_age = int(self.var("MAX_DATA_AGE_SECONDS", "180"))
+        max_age = self.whole("MAX_DATA_AGE_SECONDS", "180", " of seconds")
         sn = secrets["INVERTER_SN"]
         key = self.var("GRID_VOLTAGE_KEY", "GridVoltageL1L2")
         load_key = self.var("BACKUP_LOAD_KEY", "UPSLoadPower")
@@ -864,7 +888,7 @@ class Default(WorkerEntrypoint):
             return bot.PROD_HOLD_MESSAGE
         try:
             secrets = self.secrets()
-            channel = int(self.var("SHELLY_CHANNEL", "0"))
+            channel = self.channel()
             if action == logic.ON:
                 await self.ensure_reading(run)  # "on" needs to know whether grid is present
         except (ConfigError, logic.ApiError, ValueError) as exc:
@@ -935,7 +959,7 @@ class Default(WorkerEntrypoint):
         except Exception as exc:
             log(f"status: Shelly poll failed: {type(exc).__name__}")
             return None, None, None
-        channel = int(self.var("SHELLY_CHANNEL", "0"))
+        channel = self.channel()
         return (
             logic.plug_state(data, channel),
             logic.plug_power(data, channel),
@@ -1011,9 +1035,10 @@ class Default(WorkerEntrypoint):
 
     async def check(self, state, outbox, run):
         secrets = self.secrets()
-        channel = int(self.var("SHELLY_CHANNEL", "0"))
+        channel = self.channel()
         thresholds = self.thresholds()
         cooldown = self.cooldown_seconds()
+        blind_off = self.blind_off_seconds()
 
         reading = await self.deye_reading(secrets)
         run.update(reading._asdict())
@@ -1021,10 +1046,17 @@ class Default(WorkerEntrypoint):
         relay_state = logic.relay_open(relay)  # True: off grid, False: on grid, None: unknown
         disconnected = relay_state is True
         after_gap = "blind_since" in state  # the previous run(s) had no trustworthy reading
-        outbox.append(notify.on_voltage(state, voltage, time.time(), problem and problem[0]))
+        now = time.time()
+        outbox.append(notify.on_voltage(state, voltage, now, problem and problem[0], blind_off))
         if voltage is None:
-            log(f"no trustworthy grid reading ({problem[1]}); leaving plug as is")
-            await self.enforce_hold(secrets, channel, run)  # switching off is always safe
+            blind_for = now - state.get("blind_since", now)
+            due = bool(blind_off) and blind_for >= blind_off
+            log(
+                f"no trustworthy grid reading ({problem[1]}); "
+                + ("fail-safe off" if due else "leaving plug as is")
+            )
+            if not (due and await self.blind_switch_off(secrets, channel, state, outbox, run, blind_for)):
+                await self.enforce_hold(secrets, channel, run)  # switching off is always safe
             return
         # A change first seen after a gap in Deye's data may have happened any time
         # during the gap, so it gets no exact start (and so no duration).
@@ -1051,7 +1083,24 @@ class Default(WorkerEntrypoint):
                 return
         if desired == logic.OFF and saved == COOLDOWN_OFF:
             await self.clear_on_pending()
-            if logic.grid_condition(voltage) == "lost":
+            condition = logic.grid_condition(voltage, thresholds["off_below"], thresholds["high_off"])
+            if state.get("blind_off") and (disconnected or condition != "ok"):
+                # The first reading after a fail-safe switch-off shows a real reason to be
+                # off (outage, voltage, relay): announce that, as the switch-off it would
+                # have been, so the return is later told with the right words and duration.
+                outbox.append(
+                    self.switch_alert(
+                        state,
+                        logic.ON,
+                        logic.OFF,
+                        voltage,
+                        thresholds,
+                        cooldown,
+                        False,
+                        disconnected=relay_state,
+                    )
+                )
+            elif logic.grid_condition(voltage) == "lost":
                 outbox.append(notify.on_lost_again(state, voltage, time.time()))
             elif disconnected:
                 cooldown_minutes = round(cooldown / 60)
@@ -1115,23 +1164,74 @@ class Default(WorkerEntrypoint):
             notify.on_resumed(state)
             return  # no grid change to announce; the admin's ✅ reply already said so
         outbox.append(
-            notify.on_switched(
+            self.switch_alert(
                 state,
                 previous,
                 desired,
                 voltage,
-                switched=actual != target,
+                thresholds,
+                cooldown,
+                actual != target,
                 held=held,
-                off_below=thresholds["off_below"],
-                on_at=thresholds["on_at"],
-                now=time.time(),
-                high_off=thresholds["high_off"],
-                high_on=thresholds["high_on"],
-                cooldown_minutes=round(cooldown / 60),
                 back_since=back_since,
                 disconnected=relay_state,
             )
         )
+
+    def switch_alert(self, state, previous, desired, voltage, thresholds, cooldown, switched, **more):
+        """notify.on_switched with this deployment's thresholds and cooldown."""
+        return notify.on_switched(
+            state,
+            previous,
+            desired,
+            voltage,
+            switched=switched,
+            off_below=thresholds["off_below"],
+            on_at=thresholds["on_at"],
+            now=time.time(),
+            high_off=thresholds["high_off"],
+            high_on=thresholds["high_on"],
+            cooldown_minutes=round(cooldown / 60),
+            **more,
+        )
+
+    async def blind_switch_off(self, secrets, channel, state, outbox, run, blind_for):
+        """Fail-safe: Deye has given no trustworthy reading for BLIND_OFF_SECONDS, so the
+        grid may be gone without the guard seeing it. Switch the boiler off and save it
+        as an ordinary switch-off, so it comes back by the usual path: a reading in
+        range, then the cooldown. Does nothing when the boiler is already off for the
+        guard (switched off, held off by the admin, or never decided). True when Shelly
+        was called (so the caller makes no second call this run). A Shelly failure is
+        only logged and retried next run: the blind alert already asked the family to
+        switch the boiler off by hand."""
+        if (await self.saved_desired())[0] != logic.ON:
+            return False
+        try:
+            run["plug"] = None  # marks Shelly as called, even if this call fails
+            plug_data = await self.shelly("/device/status", secrets)
+            actual = logic.plug_state(plug_data, channel)
+            run["plug"] = actual
+            if actual is None:
+                log("fail-safe off: Shelly plug offline/unknown; will retry next run")
+                return True
+            if actual == logic.ON:
+                await asyncio.sleep(1.1)  # Shelly cloud allows ~1 request/second
+                await self.shelly("/device/relay/control", secrets, channel=channel, turn=logic.OFF)
+                run["plug"] = logic.OFF
+        except Exception as exc:
+            log(f"fail-safe off failed: {type(exc).__name__}; will retry next run")
+            return True
+        switched = actual == logic.ON
+        log(
+            f"no trustworthy reading for {blind_for:.0f}s: "
+            + ("switched plug on -> off" if switched else "plug already off")
+        )
+        await self.track_boiler(logic.OFF, plug_data, channel, switched=switched)
+        await self.state_put(DESIRED_KEY, COOLDOWN_OFF)
+        await self.clear_on_pending()
+        minutes = round(self.cooldown_seconds() / 60)
+        outbox.append(notify.on_blind_off(state, time.time(), blind_for, switched, minutes))
+        return True
 
 
 def scheduled_time(controller):

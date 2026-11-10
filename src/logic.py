@@ -220,6 +220,8 @@ def _fresh_device(data, sn, now, max_age_seconds):
         collected /= 1000
     if now - collected > max_age_seconds:
         return None, ("stale", f"last upload {(now - collected) / 60:.0f} min ago")
+    if collected - now > max_age_seconds:  # beyond clock skew: it would count as fresh for good
+        return None, ("stale", f"upload time {(collected - now) / 60:.0f} min in the future")
     return device, None
 
 

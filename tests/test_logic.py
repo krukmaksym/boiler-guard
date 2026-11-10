@@ -53,6 +53,8 @@ class GridVoltageTest(unittest.TestCase):
         self.assertIsNone(logic.grid_voltage(deye(state=2), SN, NOW))
         self.assertIsNone(logic.grid_voltage(deye(collected=NOW - 3600), SN, NOW))
         self.assertIsNone(logic.grid_voltage(deye(collected=None), SN, NOW))
+        self.assertIsNone(logic.grid_voltage(deye(collected=NOW + 3600), SN, NOW))  # never "fresh" for good
+        self.assertEqual(logic.grid_voltage(deye(collected=NOW + 30), SN, NOW), 223.2)  # clock skew is fine
         self.assertIsNone(logic.grid_voltage(deye(voltage="n/a"), SN, NOW))
 
     def test_missing_grid_key_is_none_not_load_voltage(self):

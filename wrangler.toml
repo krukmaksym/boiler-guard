@@ -58,6 +58,10 @@ HIGH_OFF_VOLTAGE = "265"
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
+# After this long without a trustworthy Deye reading the boiler is switched off, in case
+# the grid went together with the data; it comes back once a reading is in range again
+# and the cooldown has passed (0 = never switch off for lack of data).
+BLIND_OFF_SECONDS = "900"
 SHELLY_CHANNEL = "0"
 
 [observability]
@@ -126,6 +130,10 @@ HIGH_OFF_VOLTAGE = "265"
 # before the boiler switches back on (0 = no wait).
 VOLTAGE_COOLDOWN_SECONDS = "600"
 MAX_DATA_AGE_SECONDS = "180"
+# After this long without a trustworthy Deye reading the boiler is switched off, in case
+# the grid went together with the data; it comes back once a reading is in range again
+# and the cooldown has passed (0 = never switch off for lack of data).
+BLIND_OFF_SECONDS = "900"
 SHELLY_CHANNEL = "0"
 
 [env.test.observability]
