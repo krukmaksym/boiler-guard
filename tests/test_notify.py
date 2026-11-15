@@ -134,6 +134,19 @@ class SwitchTest(unittest.TestCase):
         self.assertEqual(notify.duration_text(3600), "1 год")
         self.assertEqual(notify.duration_text(3600 + 29 * 60 + 40), "1 год 30 хв")
 
+    def test_duration_text_days(self):
+        # From 24 h on: whole days and hours; minutes no longer matter.
+        h = 3600
+        self.assertEqual(notify.duration_text(23 * h + 59 * 60), "23 год 59 хв")
+        self.assertEqual(notify.duration_text(24 * h), "1 день")
+        self.assertEqual(notify.duration_text(26 * h + 40 * 60), "1 день 2 год")
+        self.assertEqual(notify.duration_text(48 * h), "2 дні")
+        self.assertEqual(notify.duration_text(4 * 24 * h + 5 * h), "4 дні 5 год")
+        self.assertEqual(notify.duration_text(5 * 24 * h), "5 днів")
+        self.assertEqual(notify.duration_text(11 * 24 * h), "11 днів")
+        self.assertEqual(notify.duration_text(21 * 24 * h), "21 день")
+        self.assertEqual(notify.duration_text(22 * 24 * h), "22 дні")
+
     def test_grid_back_while_held_off(self):
         msg = notify.on_switched({}, "off", "on", 226.0, switched=False, held=True)
         self.assertIn("Світло повернулося", msg)

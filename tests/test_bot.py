@@ -299,6 +299,11 @@ class StatusMessageTest(unittest.TestCase):
         self.assertIn("💡 Світло є 3 год 10 хв (мережа 216 В)", full)
         self.assertIn("🔥 Бойлер увімкнений 3 год 10 хв, з них нагрівав воду 1 год 25 хв", full)
         self.assertIn("🔋 Батарея 77%, заряджається 45 хв: 1031 Вт", full)
+        days = text(
+            durations={"grid": (50 * 3600, True), "boiler": (50 * 3600, True), "heated": 26 * 3600 + 40 * 60}
+        )
+        self.assertIn("💡 Світло є 2 дні 2 год (мережа 216 В)", days)
+        self.assertIn("🔥 Бойлер увімкнений 2 дні 2 год, з них нагрівав воду 1 день 2 год", days)
         unsure = text(durations={"grid": (3600, False), "boiler": (600, True), "heated": 10})
         self.assertIn("💡 Світло є понад 1 год (мережа 216 В)", unsure)
         self.assertIn("🔥 Бойлер увімкнений 10 хв, воду ще не нагрівав", unsure)

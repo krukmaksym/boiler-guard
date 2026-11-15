@@ -423,10 +423,22 @@ def plug_energy(data, channel=0):
     return float(total)
 
 
+def days_text(days):
+    """ "1 день", "3 дні", "5 днів", "21 день" (Ukrainian plural)."""
+    if days % 10 == 1 and days % 100 != 11:
+        return f"{days} день"
+    if days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14):
+        return f"{days} дні"
+    return f"{days} днів"
+
+
 def duration_text(seconds):
-    """ "45 хв" or "2 год 5 хв"; at least 1 хв."""
+    """ "45 хв", "2 год 5 хв", or from 24 h on "2 дні 3 год" (minutes dropped); at least 1 хв."""
     minutes = max(round(seconds / 60), 1)
     hours, minutes = divmod(minutes, 60)
+    if hours >= 24:
+        days, hours = divmod(hours, 24)
+        return f"{days_text(days)} {hours} год" if hours else days_text(days)
     if not hours:
         return f"{minutes} хв"
     return f"{hours} год {minutes} хв" if minutes else f"{hours} год"
